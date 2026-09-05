@@ -314,6 +314,69 @@ impl GitClient {
         }
     }
 
+    async fn artifact_exists(&self, url: String) -> anyhow::Result<bool> {
+        let response = self.client.get(url).send().await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        response.error_for_status()?;
+        Ok(true)
+    }
+
+    pub(crate) async fn release_exists(&self, tag: &str) -> anyhow::Result<bool> {
+        let encoded = urlencoding::encode(tag);
+        let path = match self.forge {
+            ForgeType::Github | ForgeType::Gitea => format!("releases/tags/{encoded}"),
+            ForgeType::Gitlab => format!("releases/{encoded}"),
+        };
+        if self
+            .artifact_exists(format!("{}/{path}", self.repo_url()))
+            .await?
+        {
+            return Ok(true);
+        }
+        if self.forge == ForgeType::Gitlab {
+            return Ok(false);
+        }
+        // GitHub's tag endpoint is for published releases. Include authenticated drafts too.
+        #[derive(Deserialize)]
+        struct ExistingRelease {
+            tag_name: String,
+        }
+        for page in 1.. {
+            let releases: Vec<ExistingRelease> = self
+                .client
+                .get(format!(
+                    "{}/releases?{}=100&page={page}",
+                    self.repo_url(),
+                    self.per_page()
+                ))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if releases.iter().any(|release| release.tag_name == tag) {
+                return Ok(true);
+            }
+            if releases.len() < 100 {
+                return Ok(false);
+            }
+        }
+        unreachable!("pagination always returns or errors")
+    }
+
+    pub(crate) async fn tag_exists(&self, tag: &str) -> anyhow::Result<bool> {
+        let tag = urlencoding::encode(tag);
+        let path = match self.forge {
+            ForgeType::Github => format!("git/ref/tags/{tag}"),
+            ForgeType::Gitea => format!("tags/{tag}"),
+            ForgeType::Gitlab => format!("repository/tags/{tag}"),
+        };
+        self.artifact_exists(format!("{}/{path}", self.repo_url()))
+            .await
+    }
+
     /// Creates a GitHub/Gitea release.
     pub async fn create_release(&self, release_info: &GitReleaseInfo) -> anyhow::Result<()> {
         match self.forge {
@@ -1190,6 +1253,47 @@ pub fn contributors_from_commits(commits: &[PrCommit], forge: ForgeType) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn recovery_finds_authenticated_draft_releases() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/releases/tags/v1.0.0"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/releases"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{"tag_name":"v1.0.0","draft":true}])),
+            )
+            .mount(&server)
+            .await;
+        let github = GitHub::new("owner".into(), "repo".into(), SecretString::from("token"))
+            .with_base_url(server.uri().parse().unwrap());
+        let client = GitClient::new(GitForge::Github(github)).unwrap();
+        assert!(client.release_exists("v1.0.0").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn recovery_lookup_propagates_permission_errors() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let github = GitHub::new("owner".into(), "repo".into(), SecretString::from("token"))
+            .with_base_url(server.uri().parse().unwrap());
+        let client = GitClient::new(GitForge::Github(github)).unwrap();
+        assert!(client.tag_exists("v1.0.0").await.is_err());
+        assert!(client.release_exists("v1.0.0").await.is_err());
+    }
 
     #[test]
     fn contributors_are_extracted_from_commits() {
