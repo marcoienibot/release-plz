@@ -7,32 +7,68 @@ use tracing::debug;
 pub fn release_order<'a>(packages: &'a [&Package]) -> anyhow::Result<Vec<&'a Package>> {
     // Normal/build dependencies remain mandatory. Versioned dev dependencies
     // are preferences: an existing registry release may satisfy a dev cycle.
-    let mut dev_edges = Vec::new();
-    let mut order = order_with_dev_edges(packages, &dev_edges)?;
-    for package in packages {
-        for dependency in &package.dependencies {
-            if dependency.kind != DependencyKind::Development
-                || dependency.req.comparators.is_empty()
-                || should_dep_be_released_before(dependency, package)
-            {
-                continue;
-            }
-            dev_edges.push((package.name.to_string(), dependency.name.clone()));
-            match order_with_dev_edges(packages, &dev_edges) {
-                Ok(candidate) => order = candidate,
-                Err(_) => {
-                    dev_edges.pop();
-                    debug!(package = %package.name, dependency = %dependency.name,
-                        "dev-dependency ordering would create a cycle; Cargo will validate the registry requirement during publication");
-                }
-            }
-        }
-    }
+    order_with_dev_edges(packages, &[])?;
+    let edges: Vec<_> = packages
+        .iter()
+        .flat_map(|package| {
+            package
+                .dependencies
+                .iter()
+                .filter(|dependency| {
+                    should_dep_be_released_before(dependency, package)
+                        || (dependency.kind == DependencyKind::Development
+                            && !dependency.req.comparators.is_empty())
+                })
+                .map(|dependency| (package.name.to_string(), dependency.name.clone()))
+        })
+        .collect();
+    // Discard every optional edge in a cycle, rather than greedily selecting one:
+    // selecting half a dev cycle could reverse a previously working release order.
+    let dev_edges: Vec<_> = packages
+        .iter()
+        .flat_map(|package| {
+            package
+                .dependencies
+                .iter()
+                .filter(|dependency| {
+                    dependency.kind == DependencyKind::Development
+                        && !dependency.req.comparators.is_empty()
+                        && !should_dep_be_released_before(dependency, package)
+                        && !reachable(
+                            &dependency.name,
+                            package.name.as_str(),
+                            &edges,
+                            &mut Vec::new(),
+                        )
+                })
+                .map(|dependency| (package.name.to_string(), dependency.name.clone()))
+        })
+        .collect();
+    let order = order_with_dev_edges(packages, &dev_edges)?;
     debug!(
         "Release order: {:?}",
         order.iter().map(|p| &p.name).collect::<Vec<_>>()
     );
     Ok(order)
+}
+
+fn reachable(
+    from: &str,
+    target: &str,
+    edges: &[(String, String)],
+    visited: &mut Vec<String>,
+) -> bool {
+    if from == target {
+        return true;
+    }
+    if visited.iter().any(|name| name == from) {
+        return false;
+    }
+    visited.push(from.to_string());
+    edges
+        .iter()
+        .filter(|(source, _)| source == from)
+        .any(|(_, destination)| reachable(destination, target, edges, visited))
 }
 
 fn order_with_dev_edges<'a>(
@@ -177,6 +213,14 @@ mod tests {
         a.dependencies[0].req = "*".parse().unwrap();
         let b = pkg("b", &[]);
         assert_eq!(order(&[&a, &b]), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_pure_dev_cycle_preserves_the_existing_order() {
+        let a = pkg("a", &[dev_dep("b")]);
+        let b = pkg("b", &[dev_dep("a")]);
+        assert_eq!(order(&[&a, &b]), ["a", "b"]);
+        assert_eq!(order(&[&b, &a]), ["b", "a"]);
     }
 
     #[test]
