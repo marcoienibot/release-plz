@@ -121,6 +121,13 @@ pub struct PrPackageRelease {
 #[instrument(skip_all)]
 pub async fn release_pr(input: &ReleasePrRequest) -> anyhow::Result<Option<ReleasePr>> {
     let manifest_dir = input.update_request.local_manifest_dir()?;
+    let original_repo = Repo::new(root_repo_path_from_manifest_dir(manifest_dir)?)?;
+    let base_packages = publishable_packages_from_manifest(input.update_request.local_manifest())?;
+    let resolved_prefix = crate::pr::render_branch_prefix(
+        &input.branch_prefix,
+        original_repo.original_branch(),
+        &base_packages,
+    )?;
     let original_project_root = root_repo_path_from_manifest_dir(manifest_dir)?;
     let tmp_project_root_parent = copy_to_temp_dir(&original_project_root)?;
     let tmp_project_manifest_dir = new_manifest_dir_path(
@@ -164,7 +171,8 @@ pub async fn release_pr(input: &ReleasePrRequest) -> anyhow::Result<Option<Relea
                     pr_name: input.pr_name_template.clone(),
                     pr_body: input.pr_body_template.clone(),
                     pr_labels: input.labels.clone(),
-                    pr_branch_prefix: input.branch_prefix.clone(),
+                    pr_branch_prefix: resolved_prefix,
+                    prefix_template: Some(input.branch_prefix.clone()),
                 },
             )
             .await?;
@@ -181,6 +189,7 @@ struct ReleasePrOptions {
     pr_body: Option<String>,
     pr_labels: Vec<String>,
     pr_branch_prefix: String,
+    prefix_template: Option<String>,
 }
 
 async fn open_or_update_release_pr(
@@ -198,7 +207,8 @@ async fn open_or_update_release_pr(
     // Check if there are opened release-plz prs with the old prefix.
     // This ensures retro-compatibility with the release-plz versions.
     // TODO: Remove this check on release-plz v0.4.0.
-    if opened_release_prs.is_empty() {
+    if opened_release_prs.is_empty() && release_pr_options.pr_branch_prefix == DEFAULT_BRANCH_PREFIX
+    {
         opened_release_prs = git_client
             .opened_prs(OLD_BRANCH_PREFIX)
             .await
@@ -214,7 +224,7 @@ async fn open_or_update_release_pr(
             .context("cannot close old release-plz prs")?;
     }
 
-    let new_pr = {
+    let mut new_pr = {
         let project_contains_multiple_pub_packages =
             publishable_packages_from_manifest(local_manifest)?.len() > 1;
         Pr::new(
@@ -228,6 +238,14 @@ async fn open_or_update_release_pr(
         .mark_as_draft(release_pr_options.draft)
         .with_labels(release_pr_options.pr_labels)
     };
+    if let Some(template) = &release_pr_options.prefix_template
+        && crate::pr::is_prefix_template(template)
+    {
+        new_pr.body.push_str(&format!(
+            "\n\n{}",
+            crate::pr::prefix_marker(template, repo.original_branch())
+        ));
+    }
     let release_pr = match opened_release_prs.first() {
         Some(opened_pr) => {
             handle_opened_pr(

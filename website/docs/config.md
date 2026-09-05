@@ -537,6 +537,22 @@ Prefix for the release PR branch. By default, it's set to: `release-plz-`
 Before changing the release-plz branch you should close the old release PR.
 :::
 
+The prefix accepts Tera templates. `{{ branch }}` is the target branch. `{{ package }}` and
+`{{ version }}` are available only when the entire workspace has one Cargo-publishable package;
+using either unguarded in a multi-package workspace is an error, even with `--package`.
+Here `version` is the version on the base branch, not the computed next version. This keeps
+PR discovery stable when the planned release changes from a patch to a minor release.
+
+```toml
+[workspace]
+pr_branch_prefix = "release-{{ branch }}-{{ package }}-{{ version }}-"
+```
+
+The rendered prefix must be nonempty and valid in a Git branch. Templated PR bodies include a
+hidden identity marker so `release_always = false` still recognizes the merged PR after its
+version bump. Preserve that marker when editing a generated PR body. Custom prefixes never
+adopt an unrelated legacy `release-plz/` PR.
+
 #### The `pr_draft` field
 
 - If `true`, release-plz creates the release PR as a draft.
