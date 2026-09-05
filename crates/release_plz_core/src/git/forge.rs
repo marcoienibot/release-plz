@@ -319,6 +319,10 @@ impl GitClient {
 
     /// Creates a GitHub/Gitea release.
     pub async fn create_release(&self, release_info: &GitReleaseInfo) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            release_info.generate_release_notes != Some(true) || self.forge == ForgeType::Github,
+            "The `git_generate_release_notes` option is only supported by GitHub"
+        );
         match self.forge {
             ForgeType::Github | ForgeType::Gitea => self.create_github_release(release_info).await,
             ForgeType::Gitlab => self.create_gitlab_release(release_info).await,
@@ -328,12 +332,8 @@ impl GitClient {
 
     /// Same as Gitea.
     pub async fn create_github_release(&self, release_info: &GitReleaseInfo) -> anyhow::Result<()> {
-        if (release_info.latest.is_some() || release_info.generate_release_notes.is_some())
-            && self.forge == ForgeType::Gitea
-        {
-            anyhow::bail!(
-                "Gitea does not support the `git_release_latest` and `generate_release_notes` options"
-            );
+        if release_info.latest.is_some() && self.forge == ForgeType::Gitea {
+            anyhow::bail!("Gitea does not support the `git_release_latest` option");
         }
         let create_release_options = CreateReleaseOption {
             tag_name: &release_info.git_tag,
@@ -1198,6 +1198,62 @@ pub fn contributors_from_commits(commits: &[PrCommit], forge: ForgeType) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn release_info(generate_release_notes: Option<bool>) -> GitReleaseInfo {
+        GitReleaseInfo {
+            git_tag: "v1.0.0".to_string(),
+            release_name: "Version 1.0.0".to_string(),
+            release_body: "Custom introduction".to_string(),
+            latest: None,
+            draft: false,
+            pre_release: false,
+            generate_release_notes,
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_release_notes_are_sent_to_github() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/releases"))
+            .and(body_json(json!({
+                "tag_name": "v1.0.0",
+                "name": "Version 1.0.0",
+                "body": "Custom introduction",
+                "draft": false,
+                "prerelease": false,
+                "generate_release_notes": true
+            })))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let github = GitHub::new("owner".into(), "repo".into(), SecretString::from("token"))
+            .with_base_url(server.uri().parse().unwrap());
+        let client = GitClient::new(GitForge::Github(github)).unwrap();
+        client
+            .create_release(&release_info(Some(true)))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn generated_release_notes_reject_unsupported_forges() {
+        let github = GitHub::new("owner".into(), "repo".into(), SecretString::from("token"));
+        let mut client = GitClient::new(GitForge::Github(github)).unwrap();
+        for forge in [ForgeType::Gitea, ForgeType::Gitlab] {
+            client.forge = forge;
+            let error = client
+                .create_release(&release_info(Some(true)))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("git_generate_release_notes"));
+        }
+    }
 
     #[test]
     fn contributors_are_extracted_from_commits() {
