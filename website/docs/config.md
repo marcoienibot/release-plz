@@ -537,6 +537,16 @@ Prefix for the release PR branch. By default, it's set to: `release-plz-`
 Before changing the release-plz branch you should close the old release PR.
 :::
 
+The `PR_BRANCH_PREFIX` environment variable overrides this workspace setting, including when no
+configuration file exists. Use a distinct non-empty prefix for each release branch. For example:
+
+```sh
+PR_BRANCH_PREFIX=release-plz-0.8.x- release-plz release-pr
+```
+
+Run the command from the branch that the release PR should target. The override changes the
+release branch prefix; it does not switch the current checkout.
+
 #### The `pr_draft` field
 
 - If `true`, release-plz creates the release PR as a draft.
