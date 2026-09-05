@@ -42,14 +42,22 @@ pub async fn update(input: &UpdateRequest) -> anyhow::Result<(PackagesUpdate, Te
     let (packages_to_update, repository) = crate::next_versions(input)
         .await
         .context("failed to determine next versions")?;
+    apply_updates(input, &packages_to_update)?;
+    Ok((packages_to_update, repository))
+}
+
+pub(crate) fn apply_updates(
+    input: &UpdateRequest,
+    packages_to_update: &PackagesUpdate,
+) -> anyhow::Result<()> {
     let local_manifest_path = input.local_manifest();
     let local_metadata = cargo_utils::get_manifest_metadata(local_manifest_path)?;
     // Read packages from `local_metadata` to update the manifest of local
     // workspace dependencies.
     let all_packages: Vec<Package> = cargo_utils::workspace_members(&local_metadata)?.collect();
     let all_packages_ref: Vec<&Package> = all_packages.iter().collect();
-    update_manifests(&packages_to_update, local_manifest_path, &all_packages_ref)?;
-    update_changelogs(input, &packages_to_update)?;
+    update_manifests(packages_to_update, local_manifest_path, &all_packages_ref)?;
+    update_changelogs(input, packages_to_update)?;
     if !packages_to_update.updates().is_empty() {
         let local_manifest_dir = input.local_manifest_dir()?;
         update_cargo_lock(local_manifest_dir, input.should_update_dependencies())?;
@@ -61,7 +69,7 @@ pub async fn update(input: &UpdateRequest) -> anyhow::Result<(PackagesUpdate, Te
         }
     }
 
-    Ok((packages_to_update, repository))
+    Ok(())
 }
 
 fn update_manifests(
@@ -132,6 +140,9 @@ fn update_changelogs(
     for (package, update) in local_packages.updates() {
         if let Some(changelog) = update.changelog.as_ref() {
             let changelog_path = update_request.changelog_path(package);
+            if let Some(parent) = changelog_path.parent() {
+                fs_err::create_dir_all(parent).context("cannot create changelog directory")?;
+            }
             fs_err::write(&changelog_path, changelog).context("cannot write changelog")?;
         }
     }

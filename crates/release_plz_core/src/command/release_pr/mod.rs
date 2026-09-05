@@ -8,6 +8,7 @@ use serde::Serialize;
 use tracing::{debug, info, instrument};
 use url::Url;
 pub(crate) mod git;
+mod groups;
 
 use crate::git::forge::{
     ForgeType, GitClient, GitPr, PrEdit, contributors_from_commits, validate_labels,
@@ -33,6 +34,7 @@ pub struct ReleasePrRequest {
     labels: Vec<String>,
     /// PR Branch Prefix
     branch_prefix: String,
+    pr_per_package: bool,
     pub update_request: UpdateRequest,
 }
 
@@ -44,8 +46,14 @@ impl ReleasePrRequest {
             draft: false,
             labels: vec![],
             branch_prefix: DEFAULT_BRANCH_PREFIX.to_string(),
+            pr_per_package: false,
             update_request,
         }
+    }
+
+    pub fn with_pr_per_package(mut self, enabled: Option<bool>) -> Self {
+        self.pr_per_package = enabled.unwrap_or(false);
+        self
     }
 
     pub fn with_pr_name_template(mut self, pr_name_template: Option<String>) -> Self {
@@ -119,7 +127,7 @@ pub struct PrPackageRelease {
 /// - [`None`] if release-plz didn't open any pr. This happens when all packages
 ///   are up-to-date.
 #[instrument(skip_all)]
-pub async fn release_pr(input: &ReleasePrRequest) -> anyhow::Result<Option<ReleasePr>> {
+pub async fn release_pr(input: &ReleasePrRequest) -> anyhow::Result<Option<Vec<ReleasePr>>> {
     let manifest_dir = input.update_request.local_manifest_dir()?;
     let original_repo = Repo::new(root_repo_path_from_manifest_dir(manifest_dir)?)?;
     let base_packages = publishable_packages_from_manifest(input.update_request.local_manifest())?;
@@ -129,6 +137,16 @@ pub async fn release_pr(input: &ReleasePrRequest) -> anyhow::Result<Option<Relea
         &base_packages,
     )?;
     let original_project_root = root_repo_path_from_manifest_dir(manifest_dir)?;
+    if input.pr_per_package {
+        return groups::release_pr_per_package(input, &original_project_root, &resolved_prefix)
+            .await;
+    }
+    let git_client = input
+        .update_request
+        .git_client()?
+        .context("can't find git client")?;
+    groups::validate_mode(&git_client, &resolved_prefix, false).await?;
+
     let tmp_project_root_parent = copy_to_temp_dir(&original_project_root)?;
     let tmp_project_manifest_dir = new_manifest_dir_path(
         &original_project_root,
@@ -173,10 +191,11 @@ pub async fn release_pr(input: &ReleasePrRequest) -> anyhow::Result<Option<Relea
                     pr_labels: input.labels.clone(),
                     pr_branch_prefix: resolved_prefix,
                     prefix_template: Some(input.branch_prefix.clone()),
+                    per_package: false,
                 },
             )
             .await?;
-            return Ok(Some(pr));
+            return Ok(Some(vec![pr]));
         }
     }
 
@@ -190,6 +209,7 @@ struct ReleasePrOptions {
     pr_labels: Vec<String>,
     pr_branch_prefix: String,
     prefix_template: Option<String>,
+    per_package: bool,
 }
 
 async fn open_or_update_release_pr(
@@ -238,14 +258,28 @@ async fn open_or_update_release_pr(
         .mark_as_draft(release_pr_options.draft)
         .with_labels(release_pr_options.pr_labels)
     };
+    let mut suffix = String::new();
     if let Some(template) = &release_pr_options.prefix_template
         && crate::pr::is_prefix_template(template)
     {
-        new_pr.body.push_str(&format!(
+        suffix.push_str(&format!(
             "\n\n{}",
             crate::pr::prefix_marker(template, repo.original_branch())
         ));
     }
+    if release_pr_options.per_package {
+        suffix.push_str(&format!("\n\n{}", groups::GROUP_MARKER));
+    }
+    anyhow::ensure!(
+        suffix.chars().count() < 65536,
+        "release PR identity marker exceeds body limit"
+    );
+    new_pr.body = new_pr
+        .body
+        .chars()
+        .take(65536 - suffix.chars().count())
+        .collect();
+    new_pr.body.push_str(&suffix);
     let release_pr = match opened_release_prs.first() {
         Some(opened_pr) => {
             handle_opened_pr(

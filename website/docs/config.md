@@ -529,6 +529,19 @@ This PR was generated with [release-plz](https://github.com/release-plz/release-
 """
 ````
 
+#### The `pr_per_package` field
+
+Set `pr_per_package = true` in `[workspace]` to open a separate PR for each independent
+package. The default remains one combined PR. Packages connected by dependencies, shared
+workspace versions, `version_group`, shared changelog files, or `changelog_include` are
+released together in an atomic PR. The full eligible workspace determines these groups,
+so branch identity is stable when only some members change.
+
+`release-pr --package NAME` selects that package's atomic group, including required peers;
+it does not open unrelated groups. `release = false` packages are excluded. Close or merge
+existing release PRs before switching between combined and per-package modes. This check
+prevents silently replacing or closing PRs from the previous mode.
+
 #### The `pr_branch_prefix` field
 
 Prefix for the release PR branch. By default, it's set to: `release-plz-`
