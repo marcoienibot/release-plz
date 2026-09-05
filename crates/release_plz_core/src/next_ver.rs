@@ -117,11 +117,6 @@ fn get_temp_worktree_and_repo(
     original_repo: &mut GitRepo,
     package_name: &str,
 ) -> anyhow::Result<(GitRepo, GitWorkTree)> {
-    // Clean up any existing worktree with this name
-    original_repo
-        .cleanup_worktree_if_exists(package_name)
-        .context("cleanup existing worktree")?;
-
     // make a worktree for the package
     let worktree = original_repo
         .temp_worktree(Some(package_name), package_name)
@@ -682,5 +677,24 @@ mod tests {
         assert_eq!(attempts.get(), 2);
         drop(workspaces);
         assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn reconstruction_preserves_existing_package_named_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(root.path().join("repo")).unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .unwrap();
+        let existing_path = root.path().join("mylib");
+        let existing = repo.worktree("mylib", &existing_path, None).unwrap();
+        let mut original = super::GitRepo::open(repo.path()).unwrap();
+        let (_repo, temporary) = super::get_temp_worktree_and_repo(&mut original, "mylib").unwrap();
+        assert!(existing_path.exists());
+        assert!(existing.validate().is_ok());
+        assert_ne!(temporary.path(), existing_path);
+        assert!(repo.find_branch("mylib", git2::BranchType::Local).is_ok());
     }
 }
