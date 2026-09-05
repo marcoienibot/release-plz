@@ -33,6 +33,48 @@ use tar::Archive;
 use toml_edit::TableLike;
 use tracing::{debug, info, instrument, trace};
 
+struct ReconstructedWorkspaces<T> {
+    commit_indexes: BTreeMap<String, usize>,
+    resources: Vec<T>,
+}
+
+impl<T> Default for ReconstructedWorkspaces<T> {
+    fn default() -> Self {
+        Self {
+            commit_indexes: BTreeMap::new(),
+            resources: Vec::new(),
+        }
+    }
+}
+
+impl<T> ReconstructedWorkspaces<T> {
+    fn get(&self, commit: &str) -> Option<&T> {
+        self.commit_indexes
+            .get(commit)
+            .map(|index| &self.resources[*index])
+    }
+
+    fn try_insert_with<E>(
+        &mut self,
+        commit: String,
+        reconstruct: impl FnOnce() -> Result<T, E>,
+    ) -> Result<&T, E> {
+        if let Some(index) = self.commit_indexes.get(&commit) {
+            return Ok(&self.resources[*index]);
+        }
+
+        let resource = reconstruct()?;
+        let index = self.resources.len();
+        self.resources.push(resource);
+        self.commit_indexes.insert(commit, index);
+        Ok(&self.resources[index])
+    }
+
+    fn into_resources(self) -> Vec<T> {
+        self.resources
+    }
+}
+
 // Used to indicate that this is a dummy commit with no corresponding ID available.
 // It should be at least 7 characters long to avoid a panic in git-cliff
 // (Git-cliff assumes it's a valid commit ID).
@@ -78,11 +120,6 @@ fn get_temp_worktree_and_repo(
     original_repo: &mut GitRepo,
     package_name: &str,
 ) -> anyhow::Result<(GitRepo, GitWorkTree)> {
-    // Clean up any existing worktree with this name
-    original_repo
-        .cleanup_worktree_if_exists(package_name)
-        .context("cleanup existing worktree")?;
-
     // make a worktree for the package
     let worktree = original_repo
         .temp_worktree(Some(package_name), package_name)
@@ -96,8 +133,8 @@ fn get_temp_worktree_and_repo(
     Ok((repo, worktree))
 }
 
-/// Process a single `git_only` package: find its release tag, checkout that commit,
-/// run `cargo package`, and return the package metadata.
+/// Process a single `git_only` package: find its release tag and commit, reconstruct
+/// the workspace if it hasn't already been reconstructed, and return the package metadata.
 ///
 /// Returns `None` if no release tag is found (package will be treated as initial release).
 #[instrument(skip_all, fields(package_name = %package.name))]
@@ -106,7 +143,8 @@ fn process_git_only_package(
     unreleased_project_repo: &mut GitRepo,
     input: &UpdateRequest,
     is_multi_package: bool,
-) -> anyhow::Result<Option<(RegistryPackage, GitWorkTree)>> {
+    reconstructed_workspaces: &mut ReconstructedWorkspaces<GitWorkTree>,
+) -> anyhow::Result<Option<RegistryPackage>> {
     // Get the release tag template, falling back to default based on project structure
     let template = input
         .get_package_tag_name(&package.name)
@@ -119,11 +157,7 @@ fn process_git_only_package(
         release_regex.to_string()
     );
 
-    // Get the temporary worktree and repo that we run cargo package in
-    let (mut repo, worktree) = get_temp_worktree_and_repo(unreleased_project_repo, &package.name)
-        .context("get worktree and repo for package")?;
-
-    let Some((release_tag, version)) = repo
+    let Some((release_tag, version)) = unreleased_project_repo
         .get_release_tag(&release_regex, &package.name)
         .context("get release tag")?
     else {
@@ -141,21 +175,34 @@ fn process_git_only_package(
     );
 
     // Get the commit associated with the release tag
-    let release_commit = repo
+    let release_commit = unreleased_project_repo
         .get_tag_commit(&release_tag)
         .context("get release tag commit")?;
 
-    // Checkout that commit in the worktree
-    repo.checkout_commit(&release_commit)
-        .context("checkout release commit for package")?;
+    let was_reconstructed = reconstructed_workspaces.get(&release_commit).is_some();
+    let worktree = reconstructed_workspaces.try_insert_with(release_commit.clone(), || {
+        let (mut repo, worktree) =
+            get_temp_worktree_and_repo(unreleased_project_repo, &package.name)
+                .context("get worktree and repo for package")?;
 
-    // Run cargo package so we have our finalized package.
-    // In git_only mode we always package the whole workspace to make sure
-    // local path dependencies are materialized as local tarballs.
-    run_cargo_package(&worktree).context("run cargo package")?;
+        repo.checkout_commit(&release_commit)
+            .context("checkout release commit for package")?;
 
-    // Get the package metadata
-    let single_package = get_cargo_package(&worktree, &package.name).with_context(|| {
+        // Package the whole workspace so unpublished path dependencies are
+        // materialized in Cargo's temporary local registry.
+        run_cargo_package(&worktree).context("run cargo package")?;
+        Ok::<_, anyhow::Error>(worktree)
+    })?;
+    if was_reconstructed {
+        debug!(
+            "Reusing packaged workspace at commit {release_commit} for package {}",
+            package.name
+        );
+    }
+
+    // Metadata paths point into the cached worktree. Any error aborts collection and drops
+    // all reconstructed workspaces, so an unusable artifact cannot be reused.
+    let single_package = get_cargo_package(worktree, &package.name).with_context(|| {
         format!(
             "get cargo package {} from worktree at {:?}",
             package.name,
@@ -164,7 +211,7 @@ fn process_git_only_package(
     })?;
 
     let registry_package = RegistryPackage::new(single_package, Some(release_commit));
-    Ok(Some((registry_package, worktree)))
+    Ok(Some(registry_package))
 }
 
 /// Run cargo package within a worktree
@@ -405,7 +452,9 @@ fn collect_git_only_packages(
     // NOTE: We need to prevent the worktrees from being dropped because their Drop
     // implementation cleans up the worktrees.
     // See the note on the custom worktree Drop impl for more details.
-    let mut worktrees = Vec::new();
+    // All reconstruction inputs other than the resolved commit are fixed for this invocation:
+    // repository, manifest, Cargo configuration/environment, and package arguments.
+    let mut reconstructed_workspaces = ReconstructedWorkspaces::default();
 
     let mut unreleased_project_repo = GitRepo::open(
         input
@@ -415,18 +464,18 @@ fn collect_git_only_packages(
     .context("create unreleased repo for spinning worktrees")?;
 
     for package in git_only_packages {
-        if let Some((registry_package, worktree)) = process_git_only_package(
+        if let Some(registry_package) = process_git_only_package(
             package,
             &mut unreleased_project_repo,
             input,
             is_multi_package,
+            &mut reconstructed_workspaces,
         )? {
             all_packages.insert(registry_package.package.name.to_string(), registry_package);
-            worktrees.push(worktree);
         }
     }
 
-    Ok((all_packages, worktrees))
+    Ok((all_packages, reconstructed_workspaces.into_resources()))
 }
 
 /// Fetch packages from the registry and return their metadata.
@@ -660,5 +709,125 @@ mod tests {
                 .join("Cargo.toml.orig")
                 .exists()
         );
+    }
+    use std::{cell::Cell, rc::Rc};
+
+    #[derive(Debug)]
+    struct TrackedResource {
+        id: usize,
+        drops: Rc<Cell<usize>>,
+    }
+
+    impl Drop for TrackedResource {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    #[test]
+    fn reconstructs_shared_commit_once() {
+        let reconstructions = Cell::new(0);
+        let drops = Rc::new(Cell::new(0));
+        let mut workspaces = ReconstructedWorkspaces::default();
+
+        let first_id = workspaces
+            .try_insert_with("shared-commit".to_owned(), || {
+                reconstructions.set(reconstructions.get() + 1);
+                Ok::<_, ()>(TrackedResource {
+                    id: 1,
+                    drops: Rc::clone(&drops),
+                })
+            })
+            .unwrap()
+            .id;
+        let second_id = workspaces
+            .try_insert_with("shared-commit".to_owned(), || {
+                reconstructions.set(reconstructions.get() + 1);
+                Ok::<_, ()>(TrackedResource {
+                    id: 2,
+                    drops: Rc::clone(&drops),
+                })
+            })
+            .unwrap()
+            .id;
+
+        assert_eq!(reconstructions.get(), 1);
+        assert_eq!(first_id, second_id);
+        drop(workspaces);
+        assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn reconstructs_different_commits_separately() {
+        let reconstructions = Cell::new(0);
+        let drops = Rc::new(Cell::new(0));
+        let mut workspaces = ReconstructedWorkspaces::default();
+
+        for commit in ["first-commit", "second-commit"] {
+            workspaces
+                .try_insert_with(commit.to_owned(), || {
+                    reconstructions.set(reconstructions.get() + 1);
+                    Ok::<_, ()>(TrackedResource {
+                        id: reconstructions.get(),
+                        drops: Rc::clone(&drops),
+                    })
+                })
+                .unwrap();
+        }
+
+        assert_eq!(reconstructions.get(), 2);
+        drop(workspaces);
+        assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn failed_reconstruction_is_cleaned_up_and_not_cached() {
+        let attempts = Cell::new(0);
+        let drops = Rc::new(Cell::new(0));
+        let mut workspaces = ReconstructedWorkspaces::default();
+
+        let result = workspaces.try_insert_with("commit".to_owned(), || {
+            attempts.set(attempts.get() + 1);
+            let _partial_resource = TrackedResource {
+                id: 1,
+                drops: Rc::clone(&drops),
+            };
+            Err::<TrackedResource, _>("reconstruction failed")
+        });
+
+        assert_eq!(result.unwrap_err(), "reconstruction failed");
+        assert_eq!(drops.get(), 1);
+        workspaces
+            .try_insert_with("commit".to_owned(), || {
+                attempts.set(attempts.get() + 1);
+                Ok::<_, &str>(TrackedResource {
+                    id: 2,
+                    drops: Rc::clone(&drops),
+                })
+            })
+            .unwrap();
+
+        assert_eq!(attempts.get(), 2);
+        drop(workspaces);
+        assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn reconstruction_preserves_existing_package_named_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(root.path().join("repo")).unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .unwrap();
+        let existing_path = root.path().join("mylib");
+        let existing = repo.worktree("mylib", &existing_path, None).unwrap();
+        let mut original = super::GitRepo::open(repo.path()).unwrap();
+        let (_repo, temporary) = super::get_temp_worktree_and_repo(&mut original, "mylib").unwrap();
+        assert!(existing_path.exists());
+        assert!(existing.validate().is_ok());
+        assert_ne!(temporary.path(), existing_path);
+        assert!(repo.find_branch("mylib", git2::BranchType::Local).is_ok());
     }
 }
