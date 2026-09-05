@@ -18,6 +18,17 @@ If you are using release-plz to release important projects, make sure to check t
 
 Put your `release-plz.toml` (or `.release-plz.toml`) file in the same directory of your root `Cargo.toml`.
 
+Create a minimal configuration file with:
+
+```sh
+release-plz init --config --no-ci
+```
+
+This creates `release-plz.toml` in the Cargo workspace root, including when you select a
+manifest with `--manifest-path`. Existing `release-plz.toml` and `.release-plz.toml` files
+are preserved. Omit `--no-ci` to also run the interactive CI setup. The generated file uses
+release-plz defaults; add only the settings you want to override.
+
 ## Example
 
 Here's an example configuration file for a cargo workspace.

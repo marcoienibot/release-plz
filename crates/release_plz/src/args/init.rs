@@ -14,6 +14,12 @@ pub struct Init {
     /// If set, don't check if the toml files contain `description` and `license` fields, which are mandatory for crates.io.
     #[arg(long)]
     pub no_toml_check: bool,
+    /// Create a minimal release-plz.toml in the Cargo workspace root if no config exists.
+    #[arg(long)]
+    pub config: bool,
+    /// Skip interactive CI setup. Requires --config.
+    #[arg(long, requires = "config")]
+    pub no_ci: bool,
 }
 
 impl ManifestCommand for Init {
