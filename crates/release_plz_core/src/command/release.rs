@@ -582,8 +582,14 @@ async fn release_packages(
     repo: &Repo,
     git_client: &GitClient,
 ) -> anyhow::Result<Option<Release>> {
-    // Packages are already ordered by release order.
-    let packages = project.publishable_packages();
+    // Project already applies release=false and dependency ordering. A package
+    // excluded from Cargo registries can still create a git tag/release when
+    // release-plz publishing is disabled (including git_only configurations).
+    let packages: Vec<_> = project
+        .workspace_packages()
+        .into_iter()
+        .filter(|package| package.is_publishable() || !input.is_publish_enabled(&package.name))
+        .collect();
     if packages.is_empty() {
         info!("nothing to release");
     }
@@ -1383,5 +1389,121 @@ mod tests {
         );
 
         assert!(request.check_publish_fields().is_err());
+    }
+
+    #[tokio::test]
+    async fn unpublished_workspace_releases_tags_and_releases_without_registry_access() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        for public_manifest in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v1/repos/owner/project/tags"))
+                .respond_with(ResponseTemplate::new(201))
+                .expect(3)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/api/v1/repos/owner/project/releases"))
+                .respond_with(ResponseTemplate::new(201))
+                .expect(3)
+                .mount(&server)
+                .await;
+
+            let temp = tempfile::tempdir().unwrap();
+            let root = crate::fs_utils::to_utf8_path(temp.path()).unwrap();
+            let repo = git2::Repository::init(root).unwrap();
+            let remote_url = format!("{}/owner/project", server.uri());
+            repo.remote("origin", &remote_url).unwrap();
+            repo.config()
+                .unwrap()
+                .set_bool("tag.gpgSign", false)
+                .unwrap();
+            fs_err::write(root.join("Cargo.toml"), "[workspace]\nmembers=[\"internal\",\"app\",\"public\",\"ignored\",\"publish-enabled\"]\nresolver=\"3\"\n").unwrap();
+            for name in ["internal", "app", "public", "ignored", "publish-enabled"] {
+                let package = root.join(name);
+                fs_err::create_dir_all(package.join("src")).unwrap();
+                let publish = public_manifest && name == "public";
+                let dependencies = if name == "app" {
+                    "[dependencies]\ninternal={path=\"../internal\",version=\"0.1.0\"}\n"
+                } else {
+                    ""
+                };
+                fs_err::write(package.join("Cargo.toml"), format!("[package]\nname=\"{name}\"\nversion=\"0.1.0\"\nedition=\"2024\"\npublish={publish}\n{dependencies}")).unwrap();
+                fs_err::write(package.join("src/lib.rs"), "pub fn f() {}").unwrap();
+            }
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let signature = git2::Signature::now("test", "test@example.com").unwrap();
+            repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+                .unwrap();
+            let metadata = cargo_utils::get_manifest_metadata(&root.join("Cargo.toml")).unwrap();
+            let forge = GitForge::Gitea(
+                crate::git::gitea_client::Gitea::new(
+                    crate::RepoUrl::new(&remote_url).unwrap(),
+                    SecretString::from("test-token"),
+                )
+                .unwrap(),
+            );
+            let request = ReleaseRequest::new(metadata)
+                .with_git_release(GitRelease { forge })
+                .with_default_package_config(
+                    ReleaseConfig::default().with_publish(PublishConfig::enabled(false)),
+                )
+                .with_package_config(
+                    "ignored".to_owned(),
+                    ReleaseConfig::default().with_release(false),
+                )
+                .with_package_config(
+                    "publish-enabled".to_owned(),
+                    ReleaseConfig::default().with_publish(PublishConfig::enabled(true)),
+                );
+            let result = release(&request)
+                .await
+                .unwrap()
+                .expect("git-only releases should be created");
+            let names: Vec<_> = result
+                .releases
+                .iter()
+                .map(|release| release.package_name.as_str())
+                .collect();
+            assert_eq!(names.len(), 3);
+            assert!(
+                names.contains(&"app") && names.contains(&"internal") && names.contains(&"public")
+            );
+            assert!(
+                names.iter().position(|name| *name == "internal")
+                    < names.iter().position(|name| *name == "app")
+            );
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(
+                requests.len(),
+                7,
+                "requests: {:?}",
+                requests
+                    .iter()
+                    .map(|request| (request.method.to_string(), request.url.path()))
+                    .collect::<Vec<_>>()
+            );
+            let tags: Vec<_> = requests
+                .iter()
+                .filter(|request| request.url.path().ends_with("/tags"))
+                .map(|request| {
+                    serde_json::from_slice::<serde_json::Value>(&request.body).unwrap()["tag_name"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                })
+                .collect();
+            assert!(tags.contains(&"app-v0.1.0".to_owned()));
+            assert!(tags.contains(&"internal-v0.1.0".to_owned()));
+            assert!(tags.contains(&"public-v0.1.0".to_owned()));
+        }
     }
 }
