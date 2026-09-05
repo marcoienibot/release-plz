@@ -1,4 +1,4 @@
-use crate::cargo::run_cargo;
+use crate::cargo::run_cargo_with_env;
 use crate::command::git::{GitRepo, GitWorkTree};
 use crate::registry_packages::{PackagesCollection, RegistryPackage};
 use crate::release_regex;
@@ -25,6 +25,7 @@ use cargo_metadata::{
 use cargo_utils::get_manifest_metadata;
 use chrono::NaiveDate;
 use flate2::read::GzDecoder;
+use secrecy::SecretString;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::PathBuf;
@@ -170,9 +171,14 @@ fn process_git_only_package(
 fn run_cargo_package(worktree: &GitWorkTree) -> anyhow::Result<()> {
     let worktree_path = to_utf8_path(worktree.path())?;
     // In git-only mode we only need the packaged files; skip verification to avoid build.rs side effects.
-    let output = run_cargo(
+    let target_dir = worktree_path.join("target");
+    let output = run_cargo_with_env(
         worktree_path,
         &["package", "--allow-dirty", "--workspace", "--no-verify"],
+        &[(
+            "CARGO_TARGET_DIR".to_owned(),
+            SecretString::from(target_dir.to_string()),
+        )],
     )
     .context("run cargo package in worktree")?;
 
@@ -264,10 +270,12 @@ fn get_cargo_package(worktree: &GitWorkTree, package_name: &str) -> anyhow::Resu
     let worktree_path = to_utf8_path(worktree.path())?;
     let manifest_path = worktree_path.join("Cargo.toml");
 
-    // Use current_dir so that CARGO_TARGET_DIR resolves correctly relative to worktree
+    // Keep each historical workspace isolated from shared target directories.
+    let target_dir = worktree_path.join("target");
     let mut command = cargo_utils::cargo_metadata_command();
     let rust_package = command
         .current_dir(worktree_path.as_std_path())
+        .env("CARGO_TARGET_DIR", target_dir)
         .no_deps()
         .manifest_path(&manifest_path)
         .exec()
@@ -597,4 +605,60 @@ fn canonicalized_path(dependency: &dyn TableLike, package_dir: &Utf8Path) -> Opt
         .get("path")
         .and_then(|i| i.as_str())
         .and_then(|relpath| dunce::canonicalize(package_dir.join(relpath)).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_only_packaging_skips_build_and_extracts_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(root.path()).unwrap();
+        fs_err::create_dir(root.path().join("src")).unwrap();
+        fs_err::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname = \"no-verify-test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs_err::write(
+            root.path().join("src/lib.rs"),
+            "pub fn answer() -> u8 { 42 }",
+        )
+        .unwrap();
+        fs_err::write(
+            root.path().join("build.rs"),
+            "fn main() { panic!(\"must not run\"); }",
+        )
+        .unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .unwrap();
+        let mut original = GitRepo::open(root.path()).unwrap();
+        let (_repo, worktree) =
+            get_temp_worktree_and_repo(&mut original, "no-verify-test").unwrap();
+        run_cargo_package(&worktree).unwrap();
+        let package = get_cargo_package(&worktree, "no-verify-test").unwrap();
+        assert_eq!(package.version, Version::new(0, 1, 0));
+        assert!(
+            package
+                .manifest_path
+                .as_std_path()
+                .starts_with(worktree.path().join("target"))
+        );
+        assert!(
+            package
+                .manifest_path
+                .parent()
+                .unwrap()
+                .join("Cargo.toml.orig")
+                .exists()
+        );
+    }
 }
