@@ -40,14 +40,14 @@ pub(crate) fn get_release_regex(template: &str, package_name: &str) -> anyhow::R
     // https://semver.org/#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string
     const SEMVER_REGEX: &str = concat!(
         r"(",
-        r"(?:0|[1-9]\d*)", // major
+        r"(?:0|[1-9][0-9]*)", // major
         r"\.",
-        r"(?:0|[1-9]\d*)", // minor
+        r"(?:0|[1-9][0-9]*)", // minor
         r"\.",
-        r"(?:0|[1-9]\d*)", // patch
-        r"(?:-",           // pre-release (optional)
-        r"(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)",
-        r"(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*",
+        r"(?:0|[1-9][0-9]*)", // patch
+        r"(?:-",              // pre-release (optional)
+        r"(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)",
+        r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*",
         r")?",
         r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", // build metadata (optional)
         r")",
@@ -163,6 +163,10 @@ mod tests {
         assert!(!regex.is_match("v01.2.3"));
         assert!(!regex.is_match("v1.02.3"));
         assert!(!regex.is_match("v1.2.03"));
+
+        // SemVer numeric components use ASCII digits only.
+        assert!(!regex.is_match("v1٢.2.3"));
+        assert!(!regex.is_match("v1.2.3-1٢"));
 
         // Leading zeros in numeric prerelease not allowed
         assert!(!regex.is_match("v1.2.3-01"));
