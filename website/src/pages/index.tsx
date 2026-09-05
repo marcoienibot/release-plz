@@ -56,6 +56,21 @@ function QuickStartSection() {
   );
 }
 
+function UsageBanner() {
+  return (
+    <div className={clsx(styles.section, "text--center")} style={{ padding: "12px 0" }}>
+      <div className="container">
+        <Link
+          to="https://github.com/release-plz/action/network/dependents"
+          style={{ fontSize: "1.1rem", fontWeight: 500 }}
+        >
+          Used by 1000+ projects
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const { siteConfig } = useDocusaurusContext();
   return (
@@ -64,6 +79,7 @@ export default function Home() {
       description="Release Rust crates from CI with a Release PR"
     >
       <HomepageHeader />
+      <UsageBanner />
       <main>
         <HomepageFeatures />
       </main>
