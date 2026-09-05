@@ -17,9 +17,14 @@ pub struct SetVersionRequest {
     /// Cargo metadata.
     metadata: Metadata,
     version_changes: SetVersionSpec,
+    local_dependencies_update: bool,
 }
 
 impl SetVersionRequest {
+    pub fn set_local_dependencies_update(&mut self, enabled: bool) {
+        self.local_dependencies_update = enabled;
+    }
+
     pub fn set_changelog_path(&mut self, package: &str, changelog_path: Utf8PathBuf) {
         match &mut self.version_changes {
             SetVersionSpec::Single(change) => {
@@ -71,6 +76,7 @@ impl SetVersionRequest {
         let manifest = canonical_local_manifest(manifest.as_ref())?;
         Ok(Self {
             version_changes,
+            local_dependencies_update: true,
             metadata,
             manifest,
         })
@@ -88,6 +94,28 @@ pub fn set_version(input: &SetVersionRequest) -> anyhow::Result<()> {
         })
         .collect();
     let all_packages: Vec<&Package> = packages.values().collect();
+    if !input.local_dependencies_update {
+        let changes = match &input.version_changes {
+            SetVersionSpec::Single(change) => {
+                anyhow::ensure!(packages.len() == 1, "specify package names for a workspace");
+                vec![(*all_packages.first().unwrap(), &change.version)]
+            }
+            SetVersionSpec::Workspace(changes) => changes
+                .iter()
+                .map(|(name, change)| {
+                    packages
+                        .get(name)
+                        .map(|package| (package, &change.version))
+                        .with_context(|| format!("package {name} not found"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        };
+        super::update::ensure_retained_requirements_match(
+            &all_packages,
+            &changes,
+            &input.manifest,
+        )?;
+    }
     match &input.version_changes {
         SetVersionSpec::Single(change) => {
             anyhow::ensure!(
@@ -101,6 +129,7 @@ pub fn set_version(input: &SetVersionRequest) -> anyhow::Result<()> {
                 &all_packages,
                 change,
                 &workspace_manifest,
+                input.local_dependencies_update,
             )?;
         }
         SetVersionSpec::Workspace(changes) => {
@@ -111,6 +140,7 @@ pub fn set_version(input: &SetVersionRequest) -> anyhow::Result<()> {
                     &all_packages,
                     change,
                     &workspace_manifest,
+                    input.local_dependencies_update,
                 )?;
             }
         }
@@ -127,16 +157,18 @@ fn set_version_in_package(
     all_packages: &[&Package],
     change: &VersionChange,
     workspace_manifest: &LocalManifest,
+    local_dependencies_update: bool,
 ) -> Result<(), anyhow::Error> {
     let pkg = packages
         .get(package)
         .with_context(|| format!("package {package} not found"))?;
     let pkg_path = pkg.package_path()?;
-    super::update::set_version(
+    super::update::set_version_with_dependencies(
         all_packages,
         pkg_path,
         &change.version,
         &workspace_manifest.path,
+        local_dependencies_update,
     )?;
     let default_changelog_path = pkg_path.join(CHANGELOG_FILENAME);
     let changelog_path: &Utf8Path = change

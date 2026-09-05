@@ -218,6 +218,28 @@ This field can be overridden in the [`[package]`](#the-package-section) section.
 - If `true`, update all the dependencies in the `Cargo.lock` file by running `cargo update`.
 - If `false`, only update the workspace packages by running `cargo update --workspace`. *(Default)*.
 
+#### The `local_dependencies_update` field
+
+By default, release-plz updates requirements that reference workspace packages
+when their versions change. Set this workspace option to `false` to keep those
+requirements under your own control:
+
+```toml
+[workspace]
+local_dependencies_update = false
+```
+
+The option applies to `update`, `release-pr`, and `set-version`. Compatible
+requirements are retained exactly, including renamed and inherited dependencies.
+If a planned version would no longer satisfy an explicit path requirement,
+release-plz reports an error before modifying manifests or changelogs. Update
+that requirement explicitly or enable this option for the incompatible release.
+
+The lockfile still refreshes workspace package identities to match their new
+versions. This option does not freeze the lockfile or disable dependency-driven
+package version bumps. `dependencies_update` separately controls full lockfile
+upgrades; its default remains `false`.
+
 #### The `custom_major_increment_regex` field
 
 Same as the [`custom_minor_increment_regex`](#the-custom_minor_increment_regex-field), but for major

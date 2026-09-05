@@ -51,6 +51,7 @@
         "git_release_type": null,
         "git_tag_enable": null,
         "git_tag_name": null,
+        "local_dependencies_update": null,
         "max_analyze_commits": 1000,
         "pr_body": null,
         "pr_branch_prefix": null,
@@ -668,6 +669,14 @@
           "description": "Tera template of the git tag name created by release-plz.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "local_dependencies_update": {
+          "title": "Local Dependencies Update",
+          "description": "Update requirements referencing workspace packages (default true).\nWhen false, incompatible retained path requirements are rejected before writing.",
+          "type": [
+            "boolean",
             "null"
           ]
         },

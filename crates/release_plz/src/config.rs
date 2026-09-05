@@ -59,8 +59,11 @@ impl Config {
         if is_changelog_update_disabled {
             default_update_config.changelog_update = false.into();
         }
-        let mut update_request =
-            update_request.with_default_package_config(default_update_config.into());
+        let mut update_request = update_request
+            .with_default_package_config(default_update_config.into())
+            .with_local_dependencies_update(
+                self.workspace.local_dependencies_update != Some(false),
+            );
         for (package, config) in self.packages() {
             let mut update_config = config.clone();
             update_config = update_config.merge(self.workspace.packages_defaults.clone());
@@ -86,6 +89,8 @@ impl Config {
         &self,
         set_version_request: &mut SetVersionRequest,
     ) -> anyhow::Result<()> {
+        set_version_request
+            .set_local_dependencies_update(self.workspace.local_dependencies_update != Some(false));
         for (package, config) in self.packages() {
             if let Some(changelog_path) = config.common.changelog_path.clone() {
                 let changelog_path = to_utf8_pathbuf(changelog_path)?;
@@ -172,6 +177,10 @@ pub struct Workspace {
     /// - If `true`, update all the dependencies in the Cargo.lock file by running `cargo update`.
     /// - If `false` or [`Option::None`], only update the workspace packages by running `cargo update --workspace`.
     pub dependencies_update: Option<bool>,
+    /// # Local Dependencies Update
+    /// Update requirements referencing workspace packages (default true).
+    /// When false, incompatible retained path requirements are rejected before writing.
+    pub local_dependencies_update: Option<bool>,
     /// # PR Name
     /// Tera template of the pull request's name created by release-plz.
     pub pr_name: Option<String>,
@@ -224,6 +233,7 @@ impl Default for Workspace {
             allow_dirty: None,
             changelog_config: None,
             dependencies_update: None,
+            local_dependencies_update: None,
             repo_url: None,
             pr_name: None,
             pr_body: None,
@@ -591,6 +601,7 @@ mod tests {
             changelog: ChangelogCfg::default(),
             workspace: Workspace {
                 dependencies_update: Some(false),
+                local_dependencies_update: None,
                 changelog_config: Some("../git-cliff.toml".into()),
                 allow_dirty: Some(false),
                 repo_url: Some(
@@ -714,6 +725,7 @@ mod tests {
             changelog: ChangelogCfg::default(),
             workspace: Workspace {
                 dependencies_update: None,
+                local_dependencies_update: None,
                 changelog_config: Some("../git-cliff.toml".into()),
                 allow_dirty: None,
                 repo_url: Some(

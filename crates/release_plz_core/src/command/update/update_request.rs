@@ -37,6 +37,7 @@ pub struct UpdateRequest {
     /// - If true, update all the dependencies in Cargo.lock by running `cargo update`.
     /// - If false, updates the workspace packages in Cargo.lock by running `cargo update --workspace`.
     dependencies_update: bool,
+    local_dependencies_update: bool,
     /// Allow dirty working directories to be updated.
     /// The uncommitted changes will be part of the update.
     allow_dirty: bool,
@@ -66,6 +67,7 @@ impl UpdateRequest {
             changelog_req: ChangelogRequest::default(),
             registry: None,
             dependencies_update: false,
+            local_dependencies_update: true,
             allow_dirty: false,
             repo_url: None,
             packages_config: PackagesConfig::default(),
@@ -217,6 +219,15 @@ impl UpdateRequest {
 
     pub fn registry_manifest(&self) -> Option<&Utf8Path> {
         self.registry_manifest.as_deref()
+    }
+
+    pub fn with_local_dependencies_update(mut self, enabled: bool) -> Self {
+        self.local_dependencies_update = enabled;
+        self
+    }
+
+    pub fn should_update_local_dependencies(&self) -> bool {
+        self.local_dependencies_update
     }
 
     pub fn with_dependencies_update(self, dependencies_update: bool) -> Self {
