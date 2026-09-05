@@ -121,7 +121,7 @@ impl TestContext {
         let root_cargo_toml = {
             let quoted_crates: Vec<String> = crates
                 .iter()
-                .map(|c| format!("\"{CRATES_DIR}/{}\"", &c.name))
+                .map(|c| format!("\"{CRATES_DIR}/{}\"", c.name))
                 .collect();
             let crates_list = quoted_crates.join(",");
             format!("[workspace]\nresolver = \"3\"\nmembers = [{crates_list}]\n")
@@ -174,7 +174,7 @@ impl TestContext {
         assert_cmd::Command::new("cargo")
             .current_dir(self.repo.directory())
             .env("CARGO_TARGET_DIR", self.cargo_target_dir())
-            .env(token_env_var, format!("Bearer {}", &self.gitea.token))
+            .env(token_env_var, format!("Bearer {}", self.gitea.token))
             .arg("publish")
             .arg("-p")
             .arg(package_name)
@@ -237,7 +237,7 @@ impl TestContext {
         super::cmd::release_plz_cmd(&self.cargo_target_dir())
             .current_dir(self.repo_dir())
             .env(RELEASE_PLZ_LOG, log_level())
-            .env(token_env_var, format!("Bearer {}", &self.gitea.token))
+            .env(token_env_var, format!("Bearer {}", self.gitea.token))
             .arg("release")
             .arg("--verbose")
             .arg("--git-token")
