@@ -25,7 +25,7 @@ Follow the steps below to set up the GitHub Action.
 
 :::tip
 If you want to use [trusted publishing](https://crates.io/docs/trusted-publishing),
-skip ahead to [Trusted publishing](#trusted-publishing)
+skip ahead to [Trusted publishing](#trusted-publishing).
 :::
 
 Release-plz needs a token to publish your packages to the cargo registry.
@@ -263,12 +263,14 @@ This is a limitation of crates.io, not release-plz.
 Follow the steps as described in
 [1. Change GitHub Actions permissions](#1-change-github-actions-permissions), then return here.
 
-### 2. Setup trusted publishing on crates.io
+### 2. Set up trusted publishing on crates.io
 
 :::tip
-This is adopted from the [trusted publishing](https://crates.io/docs/trusted-publishing)
+This is adapted from the [trusted publishing](https://crates.io/docs/trusted-publishing)
 documentation on crates.io
 :::
+
+Repeat these steps for every crate in your workspace that you want to publish.
 
 1. Search for your crate on crates.io
 2. Go to the settings tab
@@ -283,12 +285,12 @@ documentation on crates.io
    - You can optionally specify an environment, like `release`.
 
     :::tip
-    To create a new environment, go to your project on Github → Settings → Environment and add one.
+    To create a new environment, go to your project on GitHub → Settings → Environments and add one.
     :::
 
 5. Consider turning on "Require trusted publishing for all new versions"
 
-### 3. Setup the trusted publishing workflow
+### 3. Set up the trusted publishing workflow
 
 Create a new file at `.github/workflows/release-plz.yml` and copy the following workflow:
 
@@ -354,6 +356,6 @@ jobs:
 This workflow is slightly different from the standard workflow above:
 
 - The `release-plz-release` job has the additional permission `id-token: write`
-- The `CARGO_REGISTRY_TOKEN` env var never set, otherwise, release-plz will prefer using that over
+- The `CARGO_REGISTRY_TOKEN` env var is never set, otherwise, release-plz will prefer using that over
   trusted publishing
 - A commented out `environment: release`, in case you want to use environments
