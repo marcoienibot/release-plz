@@ -334,7 +334,7 @@ git_tag_name = "{{ package }}-v{{ version }}"
 
 <blockquote>
 
-## [0.1.1](https://localhost/{username}/{repo}/compare/lib1-v0.1.0...lib1-v0.1.1) - {today}
+## [0.1.1](https://localhost:3000/{username}/{repo}/compare/lib1-v0.1.0...lib1-v0.1.1) - {today}
 
 ### Added
 
@@ -408,7 +408,7 @@ git_tag_name = "api-v{{ version }}"
 
 <blockquote>
 
-## [0.1.1](https://localhost/{username}/{repo}/compare/api-v0.1.0...api-v0.1.1) - {today}
+## [0.1.1](https://localhost:3000/{username}/{repo}/compare/api-v0.1.0...api-v0.1.1) - {today}
 
 ### Added
 
@@ -609,7 +609,7 @@ git_tag_name = "{{ package }}-v{{ version }}"
 
 <blockquote>
 
-## [0.1.1](https://localhost/{username}/{repo}/compare/pkg1-v0.1.0...pkg1-v0.1.1) - {today}
+## [0.1.1](https://localhost:3000/{username}/{repo}/compare/pkg1-v0.1.0...pkg1-v0.1.1) - {today}
 
 ### Added
 
@@ -620,7 +620,7 @@ git_tag_name = "{{ package }}-v{{ version }}"
 
 <blockquote>
 
-## [0.1.1](https://localhost/{username}/{repo}/compare/pkg2-v0.1.0...pkg2-v0.1.1) - {today}
+## [0.1.1](https://localhost:3000/{username}/{repo}/compare/pkg2-v0.1.0...pkg2-v0.1.1) - {today}
 
 ### Added
 
@@ -822,7 +822,7 @@ publish = false
 
     // Verify no packages were published (since publish = false)
     let dest_dir = Utf8TempDir::new().unwrap();
-    let packages = context.download_package(dest_dir.path());
+    let packages = context.download_package(dest_dir.path()).await;
     assert!(packages.is_empty());
 }
 
@@ -972,7 +972,7 @@ publish = false
 
 <blockquote>
 
-## [0.1.1](https://localhost/{username}/{repo}/compare/mybin-v0.1.0...mybin-v0.1.1) - {today}
+## [0.1.1](https://localhost:3000/{username}/{repo}/compare/mybin-v0.1.0...mybin-v0.1.1) - {today}
 
 ### Fixed
 
