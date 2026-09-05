@@ -199,6 +199,29 @@ impl ReleaseRequest {
         Ok(token)
     }
 
+    fn validate_git_release_options(&self) -> anyhow::Result<()> {
+        let Some(git_release) = &self.git_release else {
+            return Ok(());
+        };
+        if git_release.forge.forge_type() == crate::ForgeType::Github {
+            return Ok(());
+        }
+        for package in &self.metadata.packages {
+            if !self.metadata.workspace_members.contains(&package.id) || !package.is_publishable() {
+                continue;
+            }
+            let config = self.get_package_config(&package.name);
+            anyhow::ensure!(
+                !config.release
+                    || !config.git_release.enabled
+                    || config.git_release.generate_release_notes != Some(true),
+                "Package `{}`: the `git_generate_release_notes` option is only supported by GitHub",
+                package.name
+            );
+        }
+        Ok(())
+    }
+
     /// Checks for inconsistency in the `publish` fields in the workspace metadata and release-plz config.
     ///
     /// If there is no inconsistency, returns Ok(())
@@ -538,6 +561,8 @@ pub struct PackageRelease {
 /// Release the project as it is.
 #[instrument(skip(input))]
 pub async fn release(input: &ReleaseRequest) -> anyhow::Result<Option<Release>> {
+    // Reject unsupported configuration before checkout, registry publication or tag creation.
+    input.validate_git_release_options()?;
     let overrides = input.packages_config.overridden_packages();
     let project = Project::new(
         &input.local_manifest(),
@@ -1300,6 +1325,46 @@ mod tests {
         } else {
             unsafe { env::remove_var(key.as_ref()) };
         }
+    }
+
+    #[tokio::test]
+    async fn generated_release_notes_are_validated_before_accessing_the_repository() {
+        use crate::git::{gitea_client::Gitea, gitlab_client::GitLab};
+        let remote =
+            crate::GitHub::new("owner".into(), "repo".into(), SecretString::from("token")).remote;
+        for forge in [
+            GitForge::Gitea(Gitea {
+                remote: remote.clone(),
+            }),
+            GitForge::Gitlab(GitLab {
+                remote: remote.clone(),
+            }),
+        ] {
+            let mut metadata = fake_metadata();
+            // If validation is moved after repository access, the filesystem error will win.
+            metadata.workspace_root = "/release-plz-missing-preflight-test-repository".into();
+            let request = ReleaseRequest::new(metadata)
+                .with_git_release(GitRelease { forge })
+                .with_default_package_config(ReleaseConfig::default().with_git_release(
+                    GitReleaseConfig::default().set_generate_release_notes(true),
+                ));
+            let error = release(&request).await.unwrap_err();
+            assert!(error.to_string().contains("git_generate_release_notes"));
+        }
+    }
+
+    #[test]
+    fn generated_release_notes_allow_disabled_release_on_other_forges() {
+        let remote =
+            crate::GitHub::new("owner".into(), "repo".into(), SecretString::from("token")).remote;
+        let request = ReleaseRequest::new(fake_metadata())
+            .with_git_release(GitRelease {
+                forge: GitForge::Gitea(crate::git::gitea_client::Gitea { remote }),
+            })
+            .with_default_package_config(ReleaseConfig::default().with_git_release(
+                GitReleaseConfig::enabled(false).set_generate_release_notes(true),
+            ));
+        request.validate_git_release_options().unwrap();
     }
 
     #[test]
