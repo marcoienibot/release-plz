@@ -744,6 +744,37 @@ API breaking changes of your package:
 
 This field can be overridden in the [`[package]`](#the-package-section) section.
 
+#### The `propagate_major_bump` field
+
+Set `propagate_major_bump = true` to propagate breaking changes through normal
+and build dependencies within the workspace. It defaults to `false` and can be
+overridden per package. A dependency changing from 1.x to 2.x gives its dependent
+a major bump; for 0.x, the next incompatible minor or patch version is used.
+Propagation includes packages with their own commits and repeats through the
+whole dependency chain before any changelog is generated.
+
+When a breaking dependency update reaches a prerelease package, release-plz
+returns an error. Choose that package's next version explicitly or disable this
+option for it rather than relying on an ambiguous prerelease bump.
+
+#### The `dependent_update` field
+
+Set `dependent_update = false` to prevent a package's version from being bumped
+solely because a workspace dependency changed. The default is `true`, including
+for `publish = false` packages. Use package overrides for private libraries or
+services where dependency-only releases are unwanted:
+
+```toml
+[[package]]
+name = "internal-helper"
+dependent_update = false
+```
+
+This option does not suppress the package's own changes or editing its dependency
+requirements. It also does not override `version_group` or `version.workspace =
+true`: all members whose shared version changes remain included in the release.
+Explicit `dependent_update = false` takes precedence over `propagate_major_bump`.
+
 ### The `[[package]]` section
 
 In this section, you can override some of the `workspace` fields for specific packages.

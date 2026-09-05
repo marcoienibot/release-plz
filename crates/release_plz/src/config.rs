@@ -464,6 +464,13 @@ pub struct PackageConfig {
     /// Custom regex to match commit types that should trigger a major version increment.
     /// Useful when using non-conventional commit prefixes.
     pub custom_major_increment_regex: Option<String>,
+    /// # Propagate Major Bump
+    /// Opt into incompatible version bumps when normal/build workspace dependencies break.
+    pub propagate_major_bump: Option<bool>,
+    /// # Dependent Update
+    /// Allow automatic dependency-driven version bumps (default true).
+    /// Shared workspace versions and version groups remain synchronized.
+    pub dependent_update: Option<bool>,
 }
 
 impl From<PackageConfig> for release_plz_core::UpdateConfig {
@@ -479,6 +486,8 @@ impl From<PackageConfig> for release_plz_core::UpdateConfig {
             custom_minor_increment_regex: config.custom_minor_increment_regex,
             custom_major_increment_regex: config.custom_major_increment_regex,
             git_only: config.git_only,
+            propagate_major_bump: config.propagate_major_bump == Some(true),
+            dependent_update: config.dependent_update != Some(false),
         }
     }
 }
@@ -525,6 +534,8 @@ impl PackageConfig {
                 .custom_major_increment_regex
                 .or(default.custom_major_increment_regex),
             git_only: self.git_only.or(default.git_only),
+            propagate_major_bump: self.propagate_major_bump.or(default.propagate_major_bump),
+            dependent_update: self.dependent_update.or(default.dependent_update),
         }
     }
 
@@ -908,5 +919,20 @@ unknown = false"#;
 
         let serialized = toml::to_string(&config).unwrap();
         assert!(serialized.contains(r#"custom_minor_increment_regex = "minor|enhancement""#));
+    }
+    #[test]
+    fn version_policy_package_override_preserves_workspace_opt_in() {
+        let defaults: PackageConfig =
+            toml::from_str("propagate_major_bump=true\ndependent_update=false").unwrap();
+        let package = PackageConfig {
+            dependent_update: Some(true),
+            ..Default::default()
+        };
+        let core: release_plz_core::UpdateConfig = package.merge(defaults).into();
+        assert!(core.propagate_major_bump);
+        assert!(core.dependent_update);
+        let default: release_plz_core::UpdateConfig = PackageConfig::default().into();
+        assert!(!default.propagate_major_bump);
+        assert!(default.dependent_update);
     }
 }

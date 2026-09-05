@@ -41,6 +41,7 @@
         "custom_major_increment_regex": null,
         "custom_minor_increment_regex": null,
         "dependencies_update": null,
+        "dependent_update": null,
         "features_always_increment_minor": null,
         "git_only": null,
         "git_release_body": null,
@@ -57,6 +58,7 @@
         "pr_draft": false,
         "pr_labels": [],
         "pr_name": null,
+        "propagate_major_bump": null,
         "publish": null,
         "publish_all_features": null,
         "publish_allow_dirty": null,
@@ -312,6 +314,14 @@
             "null"
           ]
         },
+        "dependent_update": {
+          "title": "Dependent Update",
+          "description": "Allow automatic dependency-driven version bumps (default true).\nShared workspace versions and version groups remain synchronized.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "features_always_increment_minor": {
           "title": "Features Always Increment Minor Version",
           "description": "- If `true`, feature commits will always bump the minor version, even in 0.x releases.\n- If `false` (default), feature commits will only bump the minor version starting with 1.x releases.",
@@ -398,6 +408,14 @@
         },
         "name": {
           "type": "string"
+        },
+        "propagate_major_bump": {
+          "title": "Propagate Major Bump",
+          "description": "Opt into incompatible version bumps when normal/build workspace dependencies break.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "publish": {
           "title": "Publish",
@@ -587,6 +605,14 @@
             "null"
           ]
         },
+        "dependent_update": {
+          "title": "Dependent Update",
+          "description": "Allow automatic dependency-driven version bumps (default true).\nShared workspace versions and version groups remain synchronized.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "features_always_increment_minor": {
           "title": "Features Always Increment Minor Version",
           "description": "- If `true`, feature commits will always bump the minor version, even in 0.x releases.\n- If `false` (default), feature commits will only bump the minor version starting with 1.x releases.",
@@ -717,6 +743,14 @@
           "description": "Tera template of the pull request's name created by release-plz.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "propagate_major_bump": {
+          "title": "Propagate Major Bump",
+          "description": "Opt into incompatible version bumps when normal/build workspace dependencies break.",
+          "type": [
+            "boolean",
             "null"
           ]
         },

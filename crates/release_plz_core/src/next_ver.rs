@@ -433,6 +433,14 @@ pub struct UpdateResult {
 
 impl UpdateResult {
     pub fn last_changes(&self) -> anyhow::Result<Option<ChangelogRelease>> {
+        // A filtered new entry must not be replaced with an older release's notes.
+        if self
+            .new_changelog_entry
+            .as_deref()
+            .is_some_and(|entry| entry.trim().is_empty())
+        {
+            return Ok(None);
+        }
         match &self.changelog {
             Some(c) => changelog_parser::last_release_from_str(c),
             None => Ok(None),
@@ -512,4 +520,19 @@ fn canonicalized_path(dependency: &dyn TableLike, package_dir: &Utf8Path) -> Opt
         .get("path")
         .and_then(|i| i.as_str())
         .and_then(|relpath| dunce::canonicalize(package_dir.join(relpath)).ok())
+}
+
+#[cfg(test)]
+mod empty_release_notes_tests {
+    #[test]
+    fn filtered_new_entries_do_not_replay_historical_release_notes() {
+        let update = super::UpdateResult {
+            version: cargo_metadata::semver::Version::new(1, 0, 1),
+            changelog: Some("## [1.0.0] - 2025-01-01\n\nHistorical notes\n".to_string()),
+            new_changelog_entry: Some(String::new()),
+            semver_check: crate::semver_check::SemverCheck::Skipped,
+            registry_version: None,
+        };
+        assert!(update.last_changes().unwrap().is_none());
+    }
 }

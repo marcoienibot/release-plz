@@ -61,6 +61,12 @@ impl Updater<'_> {
         let packages_diffs = self
             .get_packages_diffs(registry_packages, repository)
             .await?;
+        if packages_diffs.iter().any(|(package, _)| {
+            let config = self.req.get_package_config(&package.name);
+            config.generic.propagate_major_bump || !config.generic.dependent_update
+        }) {
+            return self.packages_to_update_with_policy(&packages_diffs, local_manifest_path);
+        }
         let version_groups = self.get_version_groups(&packages_diffs)?;
         debug!("version groups: {:?}", version_groups);
 
@@ -156,6 +162,174 @@ impl Updater<'_> {
             self.dependent_packages_update(&packages_to_check_for_deps, &changed_packages)?;
         packages_to_update.updates_mut().extend(dependent_packages);
         Ok(packages_to_update)
+    }
+
+    /// Resolve every version before rendering changelogs. Dependency propagation
+    /// and shared-version constraints can influence each other, so iterate until
+    /// neither changes. Versions only increase to a fixed target per package.
+    fn packages_to_update_with_policy(
+        &self,
+        packages_diffs: &[(&Package, Diff)],
+        local_manifest_path: &Utf8Path,
+    ) -> anyhow::Result<PackagesUpdate> {
+        let manifest = LocalManifest::try_new(local_manifest_path)?;
+        let workspace_dir = crate::manifest_dir(local_manifest_path)?;
+        let configs: Vec<_> = packages_diffs
+            .iter()
+            .map(|(package, _)| self.req.get_package_config(&package.name))
+            .collect();
+        let inherited: Vec<_> = packages_diffs
+            .iter()
+            .map(|(package, _)| {
+                LocalManifest::try_new(&package.manifest_path)
+                    .map(|manifest| manifest.version_is_inherited())
+            })
+            .collect::<anyhow::Result<_>>()?;
+        let mut versions = Vec::new();
+        let mut selected = Vec::new();
+        for ((package, diff), config) in packages_diffs.iter().zip(&configs) {
+            let allowed = self
+                .req
+                .release_commits()
+                .is_none_or(|regex| diff.any_commit_matches(regex));
+            let next = if allowed {
+                package
+                    .version
+                    .next_from_diff(diff, config.generic.version_updater()?)
+            } else {
+                package.version.clone()
+            };
+            selected.push(
+                allowed
+                    && (next != package.version
+                        || !diff.registry_package_exists
+                        || (!diff.is_version_published && !diff.commits.is_empty())),
+            );
+            versions.push(next);
+        }
+        let mut dependency_bumps = vec![false; versions.len()];
+        let mut breaking_bumps = vec![false; versions.len()];
+        loop {
+            let before = (versions.clone(), selected.clone());
+            // Group and inherited versions constrain all their members, including
+            // members opting out of dependency cascades: their versions still change.
+            for index in 0..versions.len() {
+                let members: Vec<_> = (0..versions.len())
+                    .filter(|&other| {
+                        (inherited[index] && inherited[other])
+                            || (configs[index].version_group.is_some()
+                                && configs[index].version_group == configs[other].version_group)
+                    })
+                    .collect();
+                if members.iter().any(|&member| selected[member]) {
+                    let next = members
+                        .iter()
+                        .map(|&member| versions[member].clone())
+                        .max()
+                        .unwrap_or_else(|| versions[index].clone());
+                    for member in members {
+                        if next > versions[member] {
+                            versions[member] = next.clone();
+                            selected[member] = true;
+                        }
+                    }
+                }
+            }
+            let changed: Vec<_> = packages_diffs
+                .iter()
+                .zip(&versions)
+                .zip(&selected)
+                .filter(|(_, selected)| **selected)
+                .map(|(((package, _), version), _)| (*package, version.clone()))
+                .collect();
+            for (index, ((package, diff), config)) in
+                packages_diffs.iter().zip(&configs).enumerate()
+            {
+                if !config.generic.dependent_update || !diff.is_version_published {
+                    continue;
+                }
+                let deps = package.dependencies_to_update(
+                    &changed,
+                    manifest.get_workspace_dependency_table(),
+                    workspace_dir,
+                )?;
+                let breaking = config.generic.propagate_major_bump
+                    && changed.iter().any(|(dependency, next)| {
+                        is_breaking_bump(&dependency.version, next)
+                            && package.dependencies.iter().any(|dep| {
+                                matches!(
+                                    dep.kind,
+                                    cargo_metadata::DependencyKind::Normal
+                                        | cargo_metadata::DependencyKind::Build
+                                ) && dep.name == dependency.name.as_str()
+                                    && dep.path.as_deref() == dependency.manifest_path.parent()
+                            })
+                    });
+                if breaking {
+                    anyhow::ensure!(
+                        !package.version.is_prerelease(),
+                        "cannot propagate a breaking dependency update to prerelease package `{}`; choose its next version explicitly or disable propagate_major_bump for this package",
+                        package.name
+                    );
+                    let target = breaking_version(&package.version);
+                    if target > versions[index] {
+                        versions[index] = target;
+                        selected[index] = true;
+                        dependency_bumps[index] = true;
+                        breaking_bumps[index] = true;
+                    }
+                } else if !deps.is_empty() && !selected[index] {
+                    versions[index] = if package.version.is_prerelease() {
+                        package.version.increment_prerelease()
+                    } else {
+                        package.version.increment_patch()
+                    };
+                    selected[index] = true;
+                    dependency_bumps[index] = true;
+                }
+            }
+            if before == (versions.clone(), selected.clone()) {
+                break;
+            }
+        }
+        let mut result = PackagesUpdate::default();
+        if let Some(version) = versions
+            .iter()
+            .zip(&inherited)
+            .zip(&selected)
+            .filter(|((_, inherited), selected)| **inherited && **selected)
+            .map(|((version, _), _)| version)
+            .max()
+        {
+            result.with_workspace_version(version.clone());
+        }
+        let mut old_changelogs = OldChangelogs::new();
+        for (index, (package, diff)) in packages_diffs.iter().enumerate() {
+            if !selected[index] {
+                continue;
+            }
+            let mut commits = diff.commits.clone();
+            if dependency_bumps[index] || commits.is_empty() {
+                let message = if breaking_bumps[index] {
+                    "chore!: propagate breaking workspace dependency changes"
+                } else if dependency_bumps[index] {
+                    "chore: update workspace dependencies"
+                } else {
+                    "chore: synchronize shared package versions"
+                };
+                commits.push(Commit::new(NO_COMMIT_ID.to_string(), message.to_string()));
+            }
+            let update = self.calculate_update_result(
+                commits,
+                versions[index].clone(),
+                package,
+                diff.semver_check.clone(),
+                diff.registry_version.clone(),
+                &mut old_changelogs,
+            )?;
+            result.updates_mut().push(((*package).clone(), update));
+        }
+        Ok(result)
     }
 
     /// Get the highest next version of all packages for each version group.
@@ -950,6 +1124,22 @@ fn is_commit_too_old(
     false
 }
 
+fn is_breaking_bump(old: &Version, new: &Version) -> bool {
+    new.major > old.major
+        || (old.major == 0 && new.minor > old.minor)
+        || (old.major == 0 && old.minor == 0 && new.patch > old.patch)
+}
+
+fn breaking_version(version: &Version) -> Version {
+    if version.major > 0 {
+        version.increment_major()
+    } else if version.minor > 0 {
+        version.increment_minor()
+    } else {
+        version.increment_patch()
+    }
+}
+
 fn pathbufs_to_check(
     package_path: &Utf8Path,
     package: &Package,
@@ -1097,6 +1287,191 @@ fn get_repo_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn policy_fixture(
+        commits: &[(&str, &str)],
+        overrides: &[(&str, bool, Option<&str>)],
+        inherited: bool,
+        prerelease_b: bool,
+    ) -> anyhow::Result<PackagesUpdate> {
+        let temp = tempfile::tempdir()?;
+        let repo = Repo::init(&temp);
+        let root = repo.directory();
+        fs_err::write(
+            root.join(CARGO_TOML),
+            "[workspace]\nmembers=[\"a\",\"b\",\"c\",\"d\"]\nresolver=\"2\"\n[workspace.package]\nversion=\"1.0.0\"\n",
+        )?;
+        for (name, dependency) in [("a", None), ("b", Some("a")), ("c", Some("b")), ("d", None)] {
+            let path = root.join(name);
+            fs_err::create_dir_all(path.join("src"))?;
+            let version = if inherited {
+                "version.workspace=true"
+            } else if prerelease_b && name == "b" {
+                "version=\"1.0.0-alpha.1\""
+            } else {
+                "version=\"1.0.0\""
+            };
+            let mut manifest = format!("[package]\nname=\"{name}\"\n{version}\nedition=\"2021\"\n");
+            if let Some(dependency) = dependency {
+                let requirement = if prerelease_b && dependency == "b" {
+                    "1.0.0-alpha.1"
+                } else {
+                    "1"
+                };
+                manifest.push_str(&format!("[dependencies]\n{dependency}={{path=\"../{dependency}\",version=\"{requirement}\"}}\n"));
+            }
+            fs_err::write(path.join(CARGO_TOML), manifest)?;
+            fs_err::write(path.join("src/lib.rs"), "pub fn api() {}\n")?;
+            fs_err::write(
+                path.join("CHANGELOG.md"),
+                "# Changelog\n\n## [1.0.0] - 2025-01-01\n\nHistorical note: dependency 1.0.1 must stay unchanged.\n",
+            )?;
+        }
+        let metadata = cargo_utils::get_manifest_metadata(&root.join(CARGO_TOML))?;
+        let mut request = UpdateRequest::new(metadata.clone())?.with_default_package_config(
+            crate::UpdateConfig {
+                propagate_major_bump: true,
+                ..Default::default()
+            }
+            .into(),
+        );
+        for (name, dependent_update, group) in overrides {
+            request = request.with_package_config(
+                name.to_string(),
+                super::super::PackageUpdateConfig {
+                    generic: crate::UpdateConfig {
+                        propagate_major_bump: true,
+                        dependent_update: *dependent_update,
+                        ..Default::default()
+                    },
+                    version_group: group.map(str::to_string),
+                    ..Default::default()
+                },
+            );
+        }
+        let project = Project::new(
+            request.local_manifest(),
+            None,
+            &HashSet::new(),
+            &metadata,
+            &request,
+        )?;
+        let updater = Updater {
+            project: &project,
+            req: &request,
+        };
+        let packages = cargo_utils::workspace_members(&metadata)?.collect::<Vec<_>>();
+        let diffs = packages
+            .iter()
+            .map(|package| {
+                let mut diff = Diff::new(true);
+                if let Some((_, message)) = commits
+                    .iter()
+                    .find(|(name, _)| *name == package.name.as_str())
+                {
+                    diff.commits
+                        .push(Commit::new(NO_COMMIT_ID.to_string(), message.to_string()));
+                }
+                (package, diff)
+            })
+            .collect::<Vec<_>>();
+        updater.packages_to_update_with_policy(&diffs, request.local_manifest())
+    }
+
+    fn policy_version(updates: &PackagesUpdate, name: &str) -> Option<Version> {
+        updates
+            .updates()
+            .iter()
+            .find(|(package, _)| package.name == name)
+            .map(|(_, update)| update.version.clone())
+    }
+
+    #[test]
+    fn policy_propagates_through_own_commit_and_mixed_chains_without_rewriting_history() {
+        for own_b in [false, true] {
+            let mut commits = vec![("a", "feat!: break a"), ("c", "fix: own c change")];
+            if own_b {
+                commits.push(("b", "fix: own b change"));
+            }
+            let updates = policy_fixture(&commits, &[], false, false).unwrap();
+            for name in ["a", "b", "c"] {
+                assert_eq!(policy_version(&updates, name), Some(Version::new(2, 0, 0)));
+                let changelog = &updates
+                    .updates()
+                    .iter()
+                    .find(|(package, _)| package.name == name)
+                    .unwrap()
+                    .1
+                    .changelog;
+                assert!(
+                    changelog
+                        .as_ref()
+                        .unwrap()
+                        .contains("Historical note: dependency 1.0.1 must stay unchanged.")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn policy_synchronizes_inherited_and_grouped_versions_after_propagation() {
+        let updates = policy_fixture(
+            &[("a", "feat!: break a")],
+            &[("d", false, None)],
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(updates.workspace_version(), Some(&Version::new(2, 0, 0)));
+        for name in ["a", "b", "c", "d"] {
+            assert_eq!(policy_version(&updates, name), Some(Version::new(2, 0, 0)));
+        }
+        let updates = policy_fixture(
+            &[("a", "feat!: break a")],
+            &[("c", true, Some("group")), ("d", false, Some("group"))],
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(policy_version(&updates, "d"), Some(Version::new(2, 0, 0)));
+    }
+
+    #[test]
+    fn policy_opt_out_suppresses_only_dependency_cascades() {
+        let updates = policy_fixture(
+            &[("a", "feat!: break a")],
+            &[("b", false, None)],
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(policy_version(&updates, "b"), None);
+        assert_eq!(policy_version(&updates, "c"), None);
+        let updates = policy_fixture(
+            &[("a", "feat!: break a"), ("b", "fix: own b change")],
+            &[("b", false, None)],
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(policy_version(&updates, "b"), Some(Version::new(1, 0, 1)));
+    }
+
+    #[test]
+    fn policy_rejects_ambiguous_prerelease_propagation() {
+        let error = policy_fixture(&[("a", "feat!: break a")], &[], false, true).unwrap_err();
+        assert!(error.to_string().contains("prerelease package `b`"));
+    }
+
+    #[test]
+    fn policy_breaking_versions_follow_zero_major_semver() {
+        for (old, expected) in [("0.0.1", "0.0.2"), ("0.1.3", "0.2.0"), ("1.3.4", "2.0.0")] {
+            let old = Version::parse(old).unwrap();
+            let expected = Version::parse(expected).unwrap();
+            assert_eq!(breaking_version(&old), expected);
+            assert!(is_breaking_bump(&old, &expected));
+        }
+    }
 
     #[test]
     fn same_version_is_not_added_to_changelog() {

@@ -30,6 +30,10 @@ pub struct UpdateConfig {
     pub custom_major_increment_regex: Option<String>,
     /// Whether to use git tags instead of registry for determining package versions.
     pub git_only: Option<bool>,
+    /// Propagate incompatible normal/build workspace dependency changes.
+    pub propagate_major_bump: bool,
+    /// Allow automatic version bumps caused by workspace dependencies.
+    pub dependent_update: bool,
 }
 
 /// Package-specific config
@@ -80,6 +84,8 @@ impl Default for UpdateConfig {
             publish: true,
             features_always_increment_minor: false,
             git_only: None,
+            propagate_major_bump: false,
+            dependent_update: true,
             tag_name_template: None,
             changelog_path: None,
             custom_minor_increment_regex: None,
