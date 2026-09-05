@@ -93,6 +93,9 @@ impl Config {
                 .clone(),
         );
         for (package, config) in self.packages() {
+            if let Some(pattern) = &config.common.version_prefix_pattern {
+                set_version_request.set_package_version_prefix_pattern(package, pattern.clone());
+            }
             if let Some(changelog_path) = config.common.changelog_path.clone() {
                 let changelog_path = to_utf8_pathbuf(changelog_path)?;
                 set_version_request.set_changelog_path(package, changelog_path);
@@ -121,14 +124,8 @@ impl Config {
         if allow_dirty {
             default_config.publish_allow_dirty = Some(true);
         }
-        let mut release_request = release_request
-            .with_default_package_config(default_config.into())
-            .with_version_prefix_pattern(
-                self.workspace
-                    .packages_defaults
-                    .version_prefix_pattern
-                    .clone(),
-            );
+        let mut release_request =
+            release_request.with_default_package_config(default_config.into());
 
         for (package, config) in self.packages() {
             let mut release_config = config.clone();
@@ -351,7 +348,8 @@ impl From<PackageConfig> for release_plz_core::ReleaseConfig {
                 release_plz_core::GitTagConfig::enabled(is_git_tag_enabled)
                     .set_name_template(git_tag_name),
             )
-            .with_release(release);
+            .with_release(release)
+            .with_version_prefix_pattern(value.version_prefix_pattern.clone());
 
         if let Some(changelog_update) = value.changelog_update {
             cfg = cfg.with_changelog_update(changelog_update);
@@ -988,5 +986,21 @@ unknown = false"#;
 
         let config: Config = toml::from_str(config).unwrap();
         assert_eq!(config, expected_config);
+    }
+
+    #[test]
+    fn release_config_preserves_package_version_prefix_override() {
+        let workspace = PackageConfig {
+            version_prefix_pattern: Some("workspace - ".to_string()),
+            ..Default::default()
+        };
+        let package = PackageConfig {
+            version_prefix_pattern: Some("package - ".to_string()),
+            ..Default::default()
+        };
+        let actual: release_plz_core::ReleaseConfig = package.merge(workspace).into();
+        let expected = release_plz_core::ReleaseConfig::default()
+            .with_version_prefix_pattern(Some("package - "));
+        assert_eq!(actual, expected);
     }
 }

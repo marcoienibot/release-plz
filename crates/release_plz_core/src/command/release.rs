@@ -54,10 +54,6 @@ pub struct ReleaseRequest {
     publish_timeout: Duration,
     /// PR Branch Prefix
     branch_prefix: String,
-    /// A regular expression used to match the prefix portion of a release heading.
-    /// See the [`prefix_format` documentation](https://docs.rs/parse-changelog/latest/parse_changelog/struct.Parser.html#method.prefix_format)
-    /// for details.
-    pub version_prefix_pattern: Option<String>,
 }
 
 impl ReleaseRequest {
@@ -74,7 +70,6 @@ impl ReleaseRequest {
             publish_timeout: minutes_30,
             release_always: true,
             branch_prefix: DEFAULT_BRANCH_PREFIX.to_string(),
-            version_prefix_pattern: None,
         }
     }
 
@@ -137,11 +132,6 @@ impl ReleaseRequest {
         config: ReleaseConfig,
     ) -> Self {
         self.packages_config.set(package.into(), config);
-        self
-    }
-
-    pub fn with_version_prefix_pattern(mut self, pattern: Option<impl Into<String>>) -> Self {
-        self.version_prefix_pattern = pattern.map(Into::into);
         self
     }
 
@@ -308,12 +298,18 @@ pub struct ReleaseConfig {
     /// High-level toggle to process this package or ignore it
     release: bool,
     changelog_path: Option<Utf8PathBuf>,
+    version_prefix_pattern: Option<String>,
     /// Whether this package has a changelog that release-plz updates or not.
     /// Default: `true`.
     changelog_update: bool,
 }
 
 impl ReleaseConfig {
+    pub fn with_version_prefix_pattern(mut self, pattern: Option<impl Into<String>>) -> Self {
+        self.version_prefix_pattern = pattern.map(Into::into);
+        self
+    }
+
     pub fn with_publish(mut self, publish: PublishConfig) -> Self {
         self.publish = publish;
         self
@@ -385,6 +381,7 @@ impl Default for ReleaseConfig {
             all_features: false,
             release: true,
             changelog_path: None,
+            version_prefix_pattern: None,
             changelog_update: true,
         }
     }
@@ -1243,7 +1240,12 @@ fn last_changelog_entry(req: &ReleaseRequest, package: &Package) -> String {
         return String::new();
     }
     let changelog_path = req.changelog_path(package);
-    match changelog_parser::last_changes(&changelog_path, req.version_prefix_pattern.as_deref()) {
+    match changelog_parser::last_changes(
+        &changelog_path,
+        req.get_package_config(&package.name)
+            .version_prefix_pattern
+            .as_deref(),
+    ) {
         Ok(Some(changes)) => changes,
         Ok(None) => {
             warn!(
@@ -1301,6 +1303,31 @@ mod tests {
         } else {
             unsafe { env::remove_var(key.as_ref()) };
         }
+    }
+
+    #[test]
+    fn release_notes_use_the_package_prefix_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let changelog = Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("CHANGELOG.md");
+        fs_err::write(
+            &changelog,
+            "## [package - 1.0.0] - 2026-01-01\n\nPackage notes\n",
+        )
+        .unwrap();
+        let package: Package = fake_package::FakePackage::new("package").into();
+        let request = ReleaseRequest::new(fake_metadata())
+            .with_default_package_config(
+                ReleaseConfig::default().with_version_prefix_pattern(Some("workspace - ")),
+            )
+            .with_package_config(
+                "package".to_string(),
+                ReleaseConfig::default()
+                    .with_changelog_path(changelog)
+                    .with_version_prefix_pattern(Some("package - ")),
+            );
+        assert_eq!(last_changelog_entry(&request, &package), "Package notes");
     }
 
     #[test]

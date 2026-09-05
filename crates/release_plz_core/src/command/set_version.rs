@@ -21,6 +21,7 @@ pub struct SetVersionRequest {
     /// See the [`prefix_format` documentation](https://docs.rs/parse-changelog/latest/parse_changelog/struct.Parser.html#method.prefix_format)
     /// for details.
     version_prefix_pattern: Option<String>,
+    package_version_prefix_patterns: BTreeMap<String, String>,
 }
 
 impl SetVersionRequest {
@@ -35,6 +36,18 @@ impl SetVersionRequest {
                 });
             }
         }
+    }
+
+    pub fn set_package_version_prefix_pattern(&mut self, package: &str, pattern: String) {
+        self.package_version_prefix_patterns
+            .insert(package.to_string(), pattern);
+    }
+
+    fn version_prefix_pattern_for(&self, package: &str) -> Option<&str> {
+        self.package_version_prefix_patterns
+            .get(package)
+            .map(String::as_str)
+            .or(self.version_prefix_pattern.as_deref())
     }
 
     pub fn set_version_prefix_pattern(&mut self, pattern: Option<impl Into<String>>) {
@@ -82,6 +95,7 @@ impl SetVersionRequest {
             metadata,
             manifest,
             version_prefix_pattern: None,
+            package_version_prefix_patterns: BTreeMap::new(),
         })
     }
 }
@@ -110,7 +124,7 @@ pub fn set_version(input: &SetVersionRequest) -> anyhow::Result<()> {
                 &all_packages,
                 change,
                 &workspace_manifest,
-                input.version_prefix_pattern.as_deref(),
+                input.version_prefix_pattern_for(package),
             )?;
         }
         SetVersionSpec::Workspace(changes) => {
@@ -121,7 +135,7 @@ pub fn set_version(input: &SetVersionRequest) -> anyhow::Result<()> {
                     &all_packages,
                     change,
                     &workspace_manifest,
-                    input.version_prefix_pattern.as_deref(),
+                    input.version_prefix_pattern_for(package),
                 )?;
             }
         }
@@ -186,4 +200,51 @@ fn update_changelog(
     fs_err::write(changelog_path, new_changelog_content)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_version_uses_package_prefix_and_workspace_fallback() {
+        let fixture = Utf8Path::new("../../tests/fixtures/set-version-in-workspace");
+        let temp = crate::copy_to_temp_dir(fixture).unwrap();
+        let root = temp.path().join("set-version-in-workspace");
+        let one_changelog = root.join("CHANGELOG.md");
+        let two_changelog = root.join("crates/two/CHANGELOG.md");
+        fs_err::write(
+            &one_changelog,
+            "## [one - 0.1.0] - 2024-05-16\n\nOne notes\n",
+        )
+        .unwrap();
+        fs_err::write(
+            &two_changelog,
+            "## [workspace - 0.2.0] - 2024-05-16\n\nTwo notes\n",
+        )
+        .unwrap();
+        let metadata = cargo_utils::get_manifest_metadata(&root.join("Cargo.toml")).unwrap();
+        let changes = SetVersionSpec::Workspace(
+            [
+                ("one".to_string(), VersionChange::new(Version::new(0, 1, 1))),
+                ("two".to_string(), VersionChange::new(Version::new(0, 2, 1))),
+            ]
+            .into(),
+        );
+        let mut request = SetVersionRequest::new(changes, metadata).unwrap();
+        request.set_changelog_path("one", one_changelog.clone());
+        request.set_version_prefix_pattern(Some("workspace - "));
+        request.set_package_version_prefix_pattern("one", "one - ".to_string());
+        set_version(&request).unwrap();
+        assert!(
+            fs_err::read_to_string(one_changelog)
+                .unwrap()
+                .contains("[one - 0.1.1]")
+        );
+        assert!(
+            fs_err::read_to_string(two_changelog)
+                .unwrap()
+                .contains("[workspace - 0.2.1]")
+        );
+    }
 }
