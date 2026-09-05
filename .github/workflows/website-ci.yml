@@ -39,6 +39,10 @@ jobs:
         run: npm run mdlint
         working-directory: ./website
 
+      - name: Test project snapshot refresh
+        run: npm run test:projects
+        working-directory: ./website
+
       - name: Build website
         run: npm run build
         working-directory: ./website

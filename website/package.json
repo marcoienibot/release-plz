@@ -15,7 +15,9 @@
         "mdlint": "markdownlint '**/*.md' --config .markdownlint.yaml --ignore node_modules",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "fetch-assets": "npx tsx ./src/fetch-assets"
+        "fetch-assets": "npx tsx ./src/fetch-assets",
+        "refresh-projects": "python3 scripts/refresh_projects.py",
+        "test:projects": "python3 -m unittest discover -s scripts -p \"test_*.py\""
     },
     "dependencies": {
         "@docusaurus/core": "^3.6.1",

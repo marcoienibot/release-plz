@@ -5,6 +5,7 @@ import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
 import Layout from "@theme/Layout";
 import Heading from "@theme/Heading";
 import HomepageFeatures from "@site/src/components/HomepageFeatures";
+import { ProjectsCounter } from "@site/src/components/ProjectsSnapshot";
 
 import styles from "./index.module.css";
 import type { Props as Tweet } from "../components/tweet";
@@ -60,12 +61,7 @@ function UsageBanner() {
   return (
     <div className={clsx(styles.section, "text--center")} style={{ padding: "12px 0" }}>
       <div className="container">
-        <Link
-          to="https://github.com/release-plz/action/network/dependents"
-          style={{ fontSize: "1.1rem", fontWeight: 500 }}
-        >
-          Used by 1000+ projects
-        </Link>
+        <ProjectsCounter />
       </div>
     </div>
   );
