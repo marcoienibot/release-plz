@@ -424,6 +424,8 @@ Where:
 
 - `{{ package }}` is the name of the package.
 - `{{ version }}` is the new version of the package(s).
+- `{{ branch }}` is the base branch targeted by the release PR, such as `main` or `0.8.x`.
+  It is always available.
 
 When using a custom template:
 
@@ -438,7 +440,7 @@ Here's an example of how you can customize the PR name template:
 
 ```toml
 [workspace]
-pr_name = "release{% if package and version %} {{ package }} v{{ version }}{% endif %}"
+pr_name = "release ({{ branch }}){% if package and version %} {{ package }} v{{ version }}{% endif %}"
 ```
 
 #### The `pr_body` field
@@ -477,6 +479,7 @@ not be parsed or it's not available. Please use `{% if <variable> %}` structures
 to check for their existence.
 :::
 
+- `{{ branch }}` - the base branch targeted by the release PR. Always available.
 - `{{ releases }}` - an array with the update information of each package.
 - `{{ release.title }}` - the changelog title containing a link to the release tag diff.
   *(Optional)*.

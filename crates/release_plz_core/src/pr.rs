@@ -68,7 +68,7 @@ impl Pr {
                 default_branch,
                 title_template,
             )?,
-            body: pr_body(packages_to_update, body_template)?,
+            body: pr_body(packages_to_update, default_branch, body_template)?,
             draft: false,
             labels: vec![],
         };
@@ -148,12 +148,13 @@ const MAX_BODY_LEN: usize = 65536;
 
 fn pr_body(
     packages_to_update: &PackagesUpdate,
+    base_branch: &str,
     body_template: Option<&str>,
 ) -> anyhow::Result<String> {
     let body_template = body_template.unwrap_or(DEFAULT_PR_BODY_TEMPLATE);
 
     let mut releases = packages_to_update.releases();
-    let first_render = render_pr_body(&releases, body_template)?;
+    let first_render = render_pr_body(&releases, base_branch, body_template)?;
 
     if first_render.chars().count() > MAX_BODY_LEN {
         tracing::info!(
@@ -165,15 +166,20 @@ fn pr_body(
             release.title = None;
         });
 
-        render_pr_body(&releases, body_template)
+        render_pr_body(&releases, base_branch, body_template)
     } else {
         Ok(first_render)
     }
 }
 
-fn render_pr_body(releases: &[ReleaseInfo], body_template: &str) -> anyhow::Result<String> {
+fn render_pr_body(
+    releases: &[ReleaseInfo],
+    base_branch: &str,
+    body_template: &str,
+) -> anyhow::Result<String> {
     let mut context = tera::Context::new();
     context.insert(RELEASES_VAR, releases);
+    context.insert(BRANCH_VAR, base_branch);
 
     let rendered_body = render_template(body_template, &context, "pr_body")?;
     Ok(trim_pr_body(rendered_body))
@@ -195,6 +201,32 @@ fn trim_pr_body(body: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_is_available_in_title_and_body_for_maintenance_releases() {
+        let updates = PackagesUpdate::new(vec![(
+            fake_package::FakePackage::new("my-package").into(),
+            crate::UpdateResult {
+                version: "0.1.1".parse().unwrap(),
+                changelog: None,
+                semver_check: crate::semver_check::SemverCheck::Skipped,
+                new_changelog_entry: None,
+                registry_version: None,
+            },
+        )]);
+        let pr = Pr::new(
+            "0.8.x",
+            &updates,
+            false,
+            DEFAULT_BRANCH_PREFIX,
+            Some("Release {{ package }} on {{ branch }}".to_string()),
+            Some("Releasing to {{ branch }}"),
+        )
+        .unwrap();
+        assert_eq!(pr.title, "Release my-package on 0.8.x");
+        assert_eq!(pr.body, "Releasing to 0.8.x");
+        assert_eq!(pr.base_branch, "0.8.x");
+    }
 
     #[test]
     fn default_pr_body_template_renders() {
