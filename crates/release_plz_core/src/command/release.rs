@@ -1685,6 +1685,12 @@ mod tests {
         };
         for public_manifest in [false, true] {
             let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/repos/owner/project/releases"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+                .expect(3)
+                .mount(&server)
+                .await;
             Mock::given(method("POST"))
                 .and(path("/api/v1/repos/owner/project/tags"))
                 .respond_with(ResponseTemplate::new(201))
@@ -1770,7 +1776,7 @@ mod tests {
             let requests = server.received_requests().await.unwrap();
             assert_eq!(
                 requests.len(),
-                7,
+                16,
                 "requests: {:?}",
                 requests
                     .iter()
@@ -1790,6 +1796,30 @@ mod tests {
             assert!(tags.contains(&"app-v0.1.0".to_owned()));
             assert!(tags.contains(&"internal-v0.1.0".to_owned()));
             assert!(tags.contains(&"public-v0.1.0".to_owned()));
+
+            // The recovery stack must also make private-package reruns idempotent.
+            server.verify().await;
+            server.reset().await;
+            for name in ["app", "internal", "public"] {
+                for artifact in ["tags", "releases/tags"] {
+                    Mock::given(method("GET"))
+                        .and(path(format!(
+                            "/api/v1/repos/owner/project/{artifact}/{name}-v0.1.0"
+                        )))
+                        .respond_with(ResponseTemplate::new(200))
+                        .expect(1)
+                        .mount(&server)
+                        .await;
+                }
+            }
+            assert!(release(&request).await.unwrap().is_none());
+            let repeated_requests = server.received_requests().await.unwrap();
+            assert_eq!(repeated_requests.len(), 7);
+            assert!(
+                repeated_requests
+                    .iter()
+                    .all(|request| request.method == "GET")
+            );
         }
     }
 }
