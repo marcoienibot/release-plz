@@ -328,7 +328,7 @@ pub struct PackageSpecificConfigWithName {
 
 impl From<PackageConfig> for release_plz_core::ReleaseConfig {
     fn from(value: PackageConfig) -> Self {
-        let is_publish_enabled = value.publish != Some(false);
+        let is_publish_enabled = value.git_only != Some(true) && value.publish != Some(false);
         let is_git_tag_enabled = value.git_tag_enable != Some(false);
         let git_tag_name = value.git_tag_name.clone();
         let release = value.release != Some(false);
@@ -566,6 +566,24 @@ impl From<ReleaseType> for release_plz_core::ReleaseType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_only_disables_registry_publishing_without_an_explicit_publish_override() {
+        for (git_only, publish, expected) in [
+            (Some(true), None, false),
+            (Some(false), None, true),
+            (None, Some(false), false),
+            (None, None, true),
+        ] {
+            let config = PackageConfig {
+                git_only,
+                publish,
+                ..Default::default()
+            };
+            let release: release_plz_core::ReleaseConfig = config.into();
+            assert_eq!(release.publish().is_enabled(), expected);
+        }
+    }
 
     const BASE_WORKSPACE_CONFIG: &str = r#"
         [workspace]
