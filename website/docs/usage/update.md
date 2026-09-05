@@ -24,3 +24,16 @@ unpublished changes.
 ![release-plz update](https://user-images.githubusercontent.com/11428655/160762832-54300ddb-ec9c-4538-a611-c66490c47333.gif)
 
 To learn more, run `release-plz update --help`.
+
+## Preview and check pending releases
+
+Run `release-plz update --dry-run` to print the planned releases without updating
+manifests, changelogs, or dependencies. It exits successfully when the analysis succeeds,
+even if releases are pending.
+
+For a CI check, use `release-plz update --check`. This also leaves release files unchanged
+and exits with status 1 when releases are pending, or 0 when no releases are pending.
+Analysis errors also return a nonzero status; read the error output to distinguish failures.
+
+Both modes still inspect the project and may download published packages for comparison.
+They are supported by `update` only.

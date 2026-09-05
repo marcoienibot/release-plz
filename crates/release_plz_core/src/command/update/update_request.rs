@@ -52,8 +52,8 @@ pub struct UpdateRequest {
     /// Kind of git forge hosting the repository.
     forge_type: ForgeType,
     max_analyze_commits: Option<u32>,
-    check_only: bool,
-    exit_status: bool,
+    /// Compute planned releases without applying updates to project files.
+    dry_run: bool,
 }
 
 impl UpdateRequest {
@@ -75,8 +75,7 @@ impl UpdateRequest {
             git: None,
             forge_type: ForgeType::Github,
             max_analyze_commits: None,
-            check_only: false,
-            exit_status: false,
+            dry_run: false,
         })
     }
 
@@ -155,23 +154,12 @@ impl UpdateRequest {
         }
     }
 
-    pub fn with_check_only(self, check_only: bool) -> Self {
-        Self { check_only, ..self }
+    pub fn with_dry_run(self, dry_run: bool) -> Self {
+        Self { dry_run, ..self }
     }
 
-    pub fn check_only(&self) -> bool {
-        self.check_only
-    }
-
-    pub fn with_exit_status(self, exit_status: bool) -> Self {
-        Self {
-            exit_status,
-            ..self
-        }
-    }
-
-    pub fn exit_status(&self) -> bool {
-        self.exit_status
+    pub fn dry_run(&self) -> bool {
+        self.dry_run
     }
 
     /// Set update config for all packages.

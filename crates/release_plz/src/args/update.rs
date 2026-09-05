@@ -116,10 +116,12 @@ pub struct Update {
     /// Default: 1000.
     #[arg(long)]
     max_analyze_commits: Option<u32>,
+    /// Print planned releases without updating manifests, changelogs, or dependencies.
     #[arg(long)]
-    check_only: bool,
+    pub dry_run: bool,
+    /// Check for pending releases without updating files; exit 1 when releases are pending.
     #[arg(long)]
-    exit_status: bool,
+    pub check: bool,
 }
 
 impl RepoCommand for Update {
@@ -179,8 +181,7 @@ impl Update {
                 format!("Cannot find file {project_manifest:?}. Make sure you are inside a rust project or that --manifest-path points to a valid Cargo.toml file.")
             })?
             .with_dependencies_update(self.dependencies_update(config))
-            .with_check_only(self.check_only)
-            .with_exit_status(self.exit_status)
+            .with_dry_run(self.dry_run || self.check)
             .with_max_analyze_commits(self.max_analyze_commits(config))
             .with_allow_dirty(self.allow_dirty(config));
         match self.get_repo_url(config) {
@@ -326,8 +327,8 @@ mod tests {
             forge: None,
             git_token: None,
             max_analyze_commits: None,
-            check_only: false,
-            exit_status: false,
+            dry_run: false,
+            check: false,
         }
     }
 

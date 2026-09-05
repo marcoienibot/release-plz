@@ -34,11 +34,15 @@ async fn run(args: CliArgs) -> anyhow::Result<()> {
             let update_request = cmd_args.update_request(&config, cargo_metadata)?;
             let (packages_update, _temp_repo) = release_plz_core::update(&update_request).await?;
             println!("{}", packages_update.summary());
-            if update_request.exit_status() && !packages_update.updates().is_empty() {
-                anyhow::bail!("updates are required, and `exit-status` flag was set.")
+            if cmd_args.check && !packages_update.updates().is_empty() {
+                anyhow::bail!("releases are pending; run `release-plz update` to apply them.")
             }
         }
         Command::ReleasePr(cmd_args) => {
+            anyhow::ensure!(
+                !cmd_args.update.dry_run && !cmd_args.update.check,
+                "--dry-run and --check are only supported by the update command"
+            );
             anyhow::ensure!(
                 cmd_args.update.git_token.is_some(),
                 "please provide the git token with the --git-token cli argument."

@@ -42,7 +42,7 @@ pub async fn update(input: &UpdateRequest) -> anyhow::Result<(PackagesUpdate, Te
     let (packages_to_update, repository) = crate::next_versions(input)
         .await
         .context("failed to determine next versions")?;
-    if !input.check_only() {
+    if !input.dry_run() {
         let local_manifest_path = input.local_manifest();
         let local_metadata = cargo_utils::get_manifest_metadata(local_manifest_path)?;
         // Read packages from `local_metadata` to update the manifest of local
