@@ -63,7 +63,9 @@ This is the same approach used in the crates.io
 
 Use [Renovate](https://docs.renovatebot.com/) or [Dependabot](https://docs.github.com/en/code-security/dependabot/dependabot-version-updates)
 to keep the pinned action version up to date automatically.
-Both tools can detect pinned GitHub Action commits and open PRs when new versions are released.
+Both tools can update pinned GitHub Action commits in workflow files.
+GitHub documents support for [commit-pinned actions](https://docs.github.com/en/actions/reference/security/secure-use#keeping-the-actions-in-your-workflows-secure-and-up-to-date)
+and provides an [example Dependabot configuration](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/auto-update-actions#example-dependabotyml-file-for-github-actions).
 
 :::
 
