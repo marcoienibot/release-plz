@@ -18,7 +18,7 @@ use crate::{
 use anyhow::Context;
 use cargo_metadata::TargetKind;
 use cargo_metadata::{
-    Metadata, MetadataCommand, Package,
+    Metadata, Package,
     camino::{Utf8Path, Utf8PathBuf},
     semver::Version,
 };
@@ -265,7 +265,8 @@ fn get_cargo_package(worktree: &GitWorkTree, package_name: &str) -> anyhow::Resu
     let manifest_path = worktree_path.join("Cargo.toml");
 
     // Use current_dir so that CARGO_TARGET_DIR resolves correctly relative to worktree
-    let rust_package = MetadataCommand::new()
+    let mut command = cargo_utils::cargo_metadata_command();
+    let rust_package = command
         .current_dir(worktree_path.as_std_path())
         .no_deps()
         .manifest_path(&manifest_path)
@@ -337,7 +338,8 @@ pub async fn next_versions(input: &UpdateRequest) -> anyhow::Result<(PackagesUpd
         registry_packages_list,
         &local_project.publishable_packages(),
         input,
-    )?;
+    )
+    .await?;
     all_packages.extend(registry_pkgs);
 
     // NOTE: We reuse registry_collection here instead of instantiating a new object
@@ -424,7 +426,7 @@ fn collect_git_only_packages(
 /// Returns:
 /// - A map of package name to `RegistryPackage`
 /// - The `PackagesCollection` (must be kept alive because it owns the temp dir)
-fn collect_registry_packages(
+async fn collect_registry_packages(
     registry_packages_list: Vec<&Package>,
     publishable_packages: &[&Package],
     input: &UpdateRequest,
@@ -459,7 +461,8 @@ fn collect_registry_packages(
         input.registry_manifest(),
         &publishable_registry_packages,
         input.registry(),
-    )?;
+    )
+    .await?;
 
     let mut all_packages = BTreeMap::new();
     for package_name in publishable_registry_packages.iter().map(|p| &p.name) {
