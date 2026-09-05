@@ -211,3 +211,15 @@ this race condition doesn't happen because the ancestor of the latest commit
 of PR 22 is PR 20, not PR 21.
 
 </details>
+
+## Recovering a partial release
+
+Rerun `release-plz release` from the release checkout after a registry or forge failure.
+Each registry is checked independently; existing versions are skipped. Tags and forge releases
+are created only after every configured registry succeeds. Existing remote artifacts are
+preserved and missing artifacts are recreated, including a release whose tag already exists.
+A rerun with nothing to repair reports no new releases. `--dry-run` creates no artifacts.
+
+The token must be able to read tags and releases as well as create them. Permission and server
+errors are surfaced rather than interpreted as missing artifacts. Existing tag targets are
+never moved. Concurrent runs should still be serialized by the workflow concurrency setting.

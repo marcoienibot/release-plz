@@ -106,6 +106,9 @@ pub struct CreateReleaseOption<'a> {
     /// Only supported by GitHub.
     #[serde(skip_serializing_if = "Option::is_none")]
     make_latest: Option<String>,
+    /// Only supported by GitHub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generate_release_notes: Option<&'a bool>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -314,8 +317,75 @@ impl GitClient {
         }
     }
 
+    async fn artifact_exists(&self, url: String) -> anyhow::Result<bool> {
+        let response = self.client.get(url).send().await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        response.error_for_status()?;
+        Ok(true)
+    }
+
+    pub(crate) async fn release_exists(&self, tag: &str) -> anyhow::Result<bool> {
+        let encoded = urlencoding::encode(tag);
+        let path = match self.forge {
+            ForgeType::Github | ForgeType::Gitea => format!("releases/tags/{encoded}"),
+            ForgeType::Gitlab => format!("releases/{encoded}"),
+        };
+        if self
+            .artifact_exists(format!("{}/{path}", self.repo_url()))
+            .await?
+        {
+            return Ok(true);
+        }
+        if self.forge == ForgeType::Gitlab {
+            return Ok(false);
+        }
+        // GitHub's tag endpoint is for published releases. Include authenticated drafts too.
+        #[derive(Deserialize)]
+        struct ExistingRelease {
+            tag_name: String,
+        }
+        for page in 1.. {
+            let releases: Vec<ExistingRelease> = self
+                .client
+                .get(format!(
+                    "{}/releases?{}=100&page={page}",
+                    self.repo_url(),
+                    self.per_page()
+                ))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if releases.iter().any(|release| release.tag_name == tag) {
+                return Ok(true);
+            }
+            if releases.len() < 100 {
+                return Ok(false);
+            }
+        }
+        unreachable!("pagination always returns or errors")
+    }
+
+    pub(crate) async fn tag_exists(&self, tag: &str) -> anyhow::Result<bool> {
+        let tag = urlencoding::encode(tag);
+        let path = match self.forge {
+            ForgeType::Github => format!("git/ref/tags/{tag}"),
+            ForgeType::Gitea => format!("tags/{tag}"),
+            ForgeType::Gitlab => format!("repository/tags/{tag}"),
+        };
+        self.artifact_exists(format!("{}/{path}", self.repo_url()))
+            .await
+    }
+
     /// Creates a GitHub/Gitea release.
     pub async fn create_release(&self, release_info: &GitReleaseInfo) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            release_info.generate_release_notes != Some(true) || self.forge == ForgeType::Github,
+            "The `git_generate_release_notes` option is only supported by GitHub"
+        );
         match self.forge {
             ForgeType::Github | ForgeType::Gitea => self.create_github_release(release_info).await,
             ForgeType::Gitlab => self.create_gitlab_release(release_info).await,
@@ -335,6 +405,7 @@ impl GitClient {
             draft: &release_info.draft,
             prerelease: &release_info.pre_release,
             make_latest: release_info.latest.map(|l| l.to_string()),
+            generate_release_notes: release_info.generate_release_notes.as_ref(),
         };
         self.client
             .post(format!("{}/releases", self.repo_url()))
@@ -1190,6 +1261,103 @@ pub fn contributors_from_commits(commits: &[PrCommit], forge: ForgeType) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn recovery_finds_authenticated_draft_releases() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/releases/tags/v1.0.0"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/releases"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{"tag_name":"v1.0.0","draft":true}])),
+            )
+            .mount(&server)
+            .await;
+        let github = GitHub::new("owner".into(), "repo".into(), SecretString::from("token"))
+            .with_base_url(server.uri().parse().unwrap());
+        let client = GitClient::new(GitForge::Github(github)).unwrap();
+        assert!(client.release_exists("v1.0.0").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn recovery_lookup_propagates_permission_errors() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let github = GitHub::new("owner".into(), "repo".into(), SecretString::from("token"))
+            .with_base_url(server.uri().parse().unwrap());
+        let client = GitClient::new(GitForge::Github(github)).unwrap();
+        assert!(client.tag_exists("v1.0.0").await.is_err());
+        assert!(client.release_exists("v1.0.0").await.is_err());
+    }
+
+    fn release_info(generate_release_notes: Option<bool>) -> GitReleaseInfo {
+        GitReleaseInfo {
+            git_tag: "v1.0.0".to_string(),
+            release_name: "Version 1.0.0".to_string(),
+            release_body: "Custom introduction".to_string(),
+            latest: None,
+            draft: false,
+            pre_release: false,
+            generate_release_notes,
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_release_notes_are_sent_to_github() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/releases"))
+            .and(body_json(json!({
+                "tag_name": "v1.0.0",
+                "name": "Version 1.0.0",
+                "body": "Custom introduction",
+                "draft": false,
+                "prerelease": false,
+                "generate_release_notes": true
+            })))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let github = GitHub::new("owner".into(), "repo".into(), SecretString::from("token"))
+            .with_base_url(server.uri().parse().unwrap());
+        let client = GitClient::new(GitForge::Github(github)).unwrap();
+        client
+            .create_release(&release_info(Some(true)))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn generated_release_notes_reject_unsupported_forges() {
+        let github = GitHub::new("owner".into(), "repo".into(), SecretString::from("token"));
+        let mut client = GitClient::new(GitForge::Github(github)).unwrap();
+        for forge in [ForgeType::Gitea, ForgeType::Gitlab] {
+            client.forge = forge;
+            let error = client
+                .create_release(&release_info(Some(true)))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("git_generate_release_notes"));
+        }
+    }
 
     #[test]
     fn contributors_are_extracted_from_commits() {

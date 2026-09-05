@@ -84,6 +84,7 @@ the following sections:
   - [`git_release_latest`](#the-git_release_latest-field) — Publish git release as latest.
   - [`git_tag_enable`](#the-git_tag_enable-field) — Enable git tag.
   - [`git_tag_name`](#the-git_tag_name-field) — Customize git tag pattern.
+  - [`git_generate_release_notes`](#the-git_generate_release_notes-field) — Generate release notes server-side.
   - [`git_only`](#the-git_only-field) — Use git tags instead of cargo registry.
   - [`pr_branch_prefix`](#the-pr_branch_prefix-field) — Release PR branch prefix.
   - [`pr_draft`](#the-pr_draft-field) — Open the release Pull Request as a draft.
@@ -123,6 +124,8 @@ the following sections:
   - [`git_release_latest`](#the-git_release_latest-field-package-section) — Publish git release as latest.
   - [`git_tag_enable`](#the-git_tag_enable-field-package-section) — Enable git tag.
   - [`git_tag_name`](#the-git_tag_name-field-package-section) — Customize git tag pattern.
+  - [`git_generate_release_notes`](#the-git_generate_release_notes-field-package-section) — Generate
+    release notes server-side.
   - [`git_only`](#the-git_only-field-package-section) — Use git tags instead of cargo registry.
   - [`publish`](#the-publish-field-package-section) — Publish to cargo registry.
   - [`publish_allow_dirty`](#the-publish_allow_dirty-field-package-section) — Package dirty directories.
@@ -348,7 +351,12 @@ Supported values are:
 - If `true`, release-plz creates the git release as latest. *(Default)*.
 - If `false`, release-plz doesn't set the git release it creates as latest.
 
-*(GitHub only)*. Gitea doesn't support this feature.
+*(GitHub only)*. Gitea and GitLab do not support this feature.
+
+GitHub appends its generated notes after the body supplied by release-plz, including any
+[`git_release_body`](#the-git_release_body-field) template. Set `git_release_body = ""`
+to use only the generated notes. The configured release name is preserved.
+See [GitHub's release API](https://docs.github.com/en/rest/releases/releases#create-a-release).
 
 :::warning
 Drafts and prereleases cannot be set as latest.
@@ -375,6 +383,18 @@ Where:
 
 - `{{ package }}` is the name of the package.
 - `{{ version }}` is the new version of the package.
+
+#### The `git_generate_release_notes` field
+
+- If `true`, release notes will be generated server-side.
+- If `false`, release-plz supplies the release body without generated notes. *(Default)*.
+
+*(GitHub only)*. Gitea and GitLab do not support this feature.
+
+GitHub appends its generated notes after the body supplied by release-plz, including any
+[`git_release_body`](#the-git_release_body-field) template. Set `git_release_body = ""`
+to use only the generated notes. The configured release name is preserved.
+See [GitHub's release API](https://docs.github.com/en/rest/releases/releases#create-a-release).
 
 #### The `git_only` field
 
@@ -852,6 +872,10 @@ Overrides the [`workspace.git_tag_enable`](#the-git_tag_enable-field) field.
 #### The `git_tag_name` field (`package` section)
 
 Overrides the [`workspace.git_tag_name`](#the-git_tag_name-field) field.
+
+#### The `git_generate_release_notes` field (`package` section)
+
+Overrides the [`workspace.git_generate_release_notes`](#the-git_generate_release_notes-field) field.
 
 #### The `git_only` field (`package` section)
 
