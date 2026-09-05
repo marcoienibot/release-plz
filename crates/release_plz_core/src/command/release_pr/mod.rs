@@ -241,10 +241,20 @@ async fn open_or_update_release_pr(
     if let Some(template) = &release_pr_options.prefix_template
         && crate::pr::is_prefix_template(template)
     {
-        new_pr.body.push_str(&format!(
+        let suffix = format!(
             "\n\n{}",
             crate::pr::prefix_marker(template, repo.original_branch())
-        ));
+        );
+        anyhow::ensure!(
+            suffix.chars().count() < 65536,
+            "prefix identity marker exceeds PR body limit"
+        );
+        new_pr.body = new_pr
+            .body
+            .chars()
+            .take(65536 - suffix.chars().count())
+            .collect();
+        new_pr.body.push_str(&suffix);
     }
     let release_pr = match opened_release_prs.first() {
         Some(opened_pr) => {
