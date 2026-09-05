@@ -5,15 +5,45 @@ use tracing::debug;
 /// In the result, the packages are placed after all their dependencies.
 /// Return an error if a circular dependency is detected.
 pub fn release_order<'a>(packages: &'a [&Package]) -> anyhow::Result<Vec<&'a Package>> {
-    let mut order = vec![];
-    let mut passed = vec![];
-    for p in packages {
-        release_order_inner(packages, p, &mut order, &mut passed)?;
+    // Normal/build dependencies remain mandatory. Versioned dev dependencies
+    // are preferences: an existing registry release may satisfy a dev cycle.
+    let mut dev_edges = Vec::new();
+    let mut order = order_with_dev_edges(packages, &dev_edges)?;
+    for package in packages {
+        for dependency in &package.dependencies {
+            if dependency.kind != DependencyKind::Development
+                || dependency.req.comparators.is_empty()
+                || should_dep_be_released_before(dependency, package)
+            {
+                continue;
+            }
+            dev_edges.push((package.name.to_string(), dependency.name.clone()));
+            match order_with_dev_edges(packages, &dev_edges) {
+                Ok(candidate) => order = candidate,
+                Err(_) => {
+                    dev_edges.pop();
+                    debug!(package = %package.name, dependency = %dependency.name,
+                        "dev-dependency ordering would create a cycle; Cargo will validate the registry requirement during publication");
+                }
+            }
+        }
     }
     debug!(
         "Release order: {:?}",
         order.iter().map(|p| &p.name).collect::<Vec<_>>()
     );
+    Ok(order)
+}
+
+fn order_with_dev_edges<'a>(
+    packages: &[&'a Package],
+    dev_edges: &[(String, String)],
+) -> anyhow::Result<Vec<&'a Package>> {
+    let mut order = Vec::new();
+    let mut passed = Vec::new();
+    for package in packages {
+        release_order_inner(packages, package, &mut order, &mut passed, dev_edges)?;
+    }
     Ok(order)
 }
 
@@ -24,6 +54,7 @@ fn release_order_inner<'a>(
     pkg: &'a Package,
     order: &mut Vec<&'a Package>,
     passed: &mut Vec<&'a Package>,
+    dev_edges: &[(String, String)],
 ) -> anyhow::Result<()> {
     if is_package_in(pkg, order) {
         return Ok(());
@@ -36,7 +67,8 @@ fn release_order_inner<'a>(
             d.name == *p.name
               // Exclude the current package.
               && p.name != pkg.name
-              && should_dep_be_released_before(d, pkg)
+              && (should_dep_be_released_before(d, pkg)
+                || dev_edges.iter().any(|(from, to)| from == pkg.name.as_str() && to == &d.name))
         }) {
             anyhow::ensure!(
                 !is_package_in(dep, passed),
@@ -44,12 +76,12 @@ fn release_order_inner<'a>(
                 dep.name,
                 pkg.name,
             );
-            release_order_inner(packages, dep, order, passed)?;
+            release_order_inner(packages, dep, order, passed, dev_edges)?;
         }
     }
 
     order.push(pkg);
-    passed.clear();
+    passed.pop();
     Ok(())
 }
 
@@ -131,6 +163,29 @@ mod tests {
             .iter()
             .map(|p| p.name.as_str())
             .collect()
+    }
+
+    #[test]
+    fn versioned_dev_dependencies_are_preferred_before_dependents() {
+        let pkgs = [&pkg("a", &[dev_dep("b")]), &pkg("b", &[])];
+        assert_eq!(order(&pkgs), ["b", "a"]);
+    }
+
+    #[test]
+    fn unversioned_dev_dependencies_do_not_change_order() {
+        let mut a = pkg("a", &[dev_dep("b")]);
+        a.dependencies[0].req = "*".parse().unwrap();
+        let b = pkg("b", &[]);
+        assert_eq!(order(&[&a, &b]), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_dev_cycle_does_not_discard_other_dev_ordering() {
+        let a = pkg("a", &[dev_dep("b"), dev_dep("c")]);
+        let b = pkg("b", &[dep("a")]);
+        let c = pkg("c", &[]);
+        // b must follow a; c can still be published before a.
+        assert_eq!(order(&[&a, &b, &c]), ["c", "a", "b"]);
     }
 
     // Diagrams created with https://asciiflow.com/

@@ -211,3 +211,15 @@ this race condition doesn't happen because the ancestor of the latest commit
 of PR 22 is PR 20, not PR 21.
 
 </details>
+
+### Development dependencies in a workspace
+
+Release-plz publishes normal and build dependencies before their dependents.
+It also prefers versioned development dependencies first when that ordering does
+not create a cycle. Path-only development dependencies do not affect ordering.
+
+A development dependency cycle may already be satisfied by compatible versions
+in the registry, so release-plz preserves the normal/build dependency order in
+that case. Cargo validates each requirement during publication. If no compatible
+registry version exists, publish a bootstrap version or break the development
+cycle before releasing the workspace.
