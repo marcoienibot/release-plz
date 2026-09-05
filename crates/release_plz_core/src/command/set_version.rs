@@ -88,6 +88,8 @@ impl SetVersionRequest {
 
 pub fn set_version(input: &SetVersionRequest) -> anyhow::Result<()> {
     let workspace_manifest = LocalManifest::try_new(&input.manifest)?;
+    let workspace_dir = crate::manifest_dir(&workspace_manifest.path)?;
+    let cargo_lock = workspace_dir.join("Cargo.lock");
     let packages: BTreeMap<String, Package> = workspace_members(&input.metadata)?
         .map(|p| {
             let package_name = p.name.to_string();
@@ -123,6 +125,9 @@ pub fn set_version(input: &SetVersionRequest) -> anyhow::Result<()> {
                 )?;
             }
         }
+    }
+    if cargo_lock.exists() {
+        super::update::update_cargo_lock(workspace_dir, false)?;
     }
     Ok(())
 }
