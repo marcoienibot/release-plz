@@ -27,6 +27,7 @@ pub fn are_packages_equal(
         local_package, registry_package
     );
     if !are_cargo_toml_equal(local_package, registry_package) {
+        debug!("Cargo.toml is different");
         return Ok(false);
     }
 
@@ -64,6 +65,7 @@ pub fn are_packages_equal(
 
     if !local_files.clone().eq(registry_files) {
         // New files were added or removed.
+        debug!("cargo package list is different");
         return Ok(false);
     }
 
@@ -153,15 +155,11 @@ fn list_packaged_files(package: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
                 .file_type()
                 .with_context(|| format!("cannot read file type for {path:?}"))?;
 
+            // Git metadata can be either a directory or a worktree/submodule pointer file.
+            if path.file_name() == Some(".git") {
+                continue;
+            }
             if file_type.is_dir() {
-                // Registry sources extracted via `git clone` (as some registries do) leave
-                // a full `.git` directory behind. `cargo package --list` never includes
-                // `.git`, so the disk-listing fast path must skip it too, or every file
-                // inside it would make the registry package look different from the
-                // local one for reasons unrelated to the actual packaged contents.
-                if path.file_name() == Some(".git") {
-                    continue;
-                }
                 dirs.push(path);
             } else {
                 let rel_path = path
@@ -379,6 +377,18 @@ mod tests {
                 Utf8PathBuf::from("Cargo.toml.orig"),
                 Utf8PathBuf::from("src/lib.rs")
             ]
+        );
+    }
+
+    #[test]
+    fn get_cargo_package_files_ignores_git_pointer_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = Utf8Path::from_path(dir.path()).unwrap();
+        fs::write(package.join("Cargo.toml.orig"), "manifest").unwrap();
+        fs::write(package.join(".git"), "gitdir: /elsewhere/worktrees/crate").unwrap();
+        assert_eq!(
+            get_cargo_package_files(package).unwrap(),
+            vec![Utf8PathBuf::from("Cargo.toml.orig")]
         );
     }
 }
