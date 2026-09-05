@@ -1,5 +1,8 @@
 //! An additive, reproducible overview of independent package histories.
-use std::{collections::BTreeMap, sync::LazyLock};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::LazyLock,
+};
 
 use anyhow::{Context as _, ensure};
 use cargo_metadata::camino::{Utf8Component, Utf8Path, Utf8PathBuf};
@@ -30,7 +33,11 @@ pub(super) fn prepare(
     let path = request.local_manifest().parent().unwrap().join(relative);
     let destination = resolved_path(&path)?;
     let mut histories = Vec::new();
-    for package in cargo_utils::workspace_members(request.cargo_metadata())? {
+    let mut source_paths = HashSet::new();
+    // release-pr changes local_manifest to a temporary checkout but retains the
+    // original metadata. Read paths in the checkout we are actually updating.
+    let metadata = cargo_utils::get_manifest_metadata(request.local_manifest())?;
+    for package in cargo_utils::workspace_members(&metadata)? {
         let source = request.changelog_path(&package);
         ensure!(
             resolved_path(&source)? != destination,
@@ -41,10 +48,14 @@ pub(super) fn prepare(
         if !config.generic.release || !config.should_update_changelog() {
             continue;
         }
+        ensure!(
+            source_paths.insert(resolved_path(&source)?),
+            "workspace_changelog requires independent package changelogs; multiple packages use {source}"
+        );
         let planned = updates
             .updates()
             .iter()
-            .find(|(p, _)| p.id == package.id)
+            .find(|(p, _)| p.name == package.name)
             .and_then(|(_, update)| update.changelog.clone());
         let text = match planned {
             Some(text) => text,
@@ -94,8 +105,12 @@ fn render(
                 continue;
             }
             let title = release.title_no_link();
+            // SemVer prerelease/build identifiers can themselves contain dates.
+            let suffix = title.find(release.version).map_or(title.as_ref(), |start| {
+                &title[start + release.version.len()..]
+            });
             let date = DATE
-                .find(&title)
+                .find(suffix)
                 .map(|date| NaiveDate::parse_from_str(date.as_str(), "%Y-%m-%d"))
                 .transpose()
                 .with_context(|| format!("invalid release date in {source}"))?;
@@ -197,8 +212,21 @@ fn relocate_notes(
 }
 
 fn replace_generated(existing: &str, generated: &str) -> anyhow::Result<String> {
-    let starts: Vec<_> = existing.match_indices(START).collect();
-    let ends: Vec<_> = existing.match_indices(END).collect();
+    let mut starts = Vec::new();
+    let mut ends = Vec::new();
+    for (event, range) in Parser::new(existing).into_offset_iter() {
+        if let Event::Html(comment) = event {
+            let marker = comment.trim();
+            if marker == START || marker == END {
+                let offset = range.start + comment.find(marker).unwrap();
+                if marker == START {
+                    starts.push((offset, ()));
+                } else {
+                    ends.push((offset, ()));
+                }
+            }
+        }
+    }
     let block = format!("{START}\n\n{generated}{END}");
     match (starts.as_slice(), ends.as_slice()) {
         ([], []) => Ok(format!("{}\n\n{block}\n", existing.trim_end())),
@@ -327,6 +355,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rollup_uses_release_date_after_version_metadata() {
+        let root = std::env::current_dir().unwrap();
+        let source = Utf8PathBuf::from_path_buf(root.join("a/CHANGELOG.md")).unwrap();
+        let output = Utf8PathBuf::from_path_buf(root.join("docs/WORKSPACE.md")).unwrap();
+        let text = "# Changelog\n\n## [1.0.0+2025-01-01] - 2026-09-05\n\n- Change\n";
+        let rendered = render(&[("a".into(), source, text.into())], &output).unwrap();
+        assert!(rendered.contains("## 2026-09-05\n"));
+        assert!(!rendered.contains("## 2025-01-01\n"));
+    }
+
+    #[test]
+    fn rollup_rejects_shared_source_changelogs() {
+        let (_temp, request) = fixture();
+        let request = request.with_default_package_config(UpdateConfig {
+            changelog_path: Some("SHARED.md".into()),
+            ..Default::default()
+        });
+        let error = prepare(&request, &PackagesUpdate::new(vec![])).unwrap_err();
+        assert!(error.to_string().contains("independent package changelogs"));
+    }
+
+    #[test]
+    fn rollup_uses_temporary_checkout_paths_after_manifest_relocation() {
+        let (_original, request) = fixture();
+        let (_copy, copied) = fixture();
+        let original_root = request.local_manifest().parent().unwrap();
+        let copied_root = copied.local_manifest().parent().unwrap();
+        fs_err::write(
+            original_root.join("a/CHANGELOG.md"),
+            "# Changelog\n\n## [1.0.0]\n\n- Original checkout.\n",
+        )
+        .unwrap();
+        fs_err::write(
+            copied_root.join("a/CHANGELOG.md"),
+            "# Changelog\n\n## [1.0.0]\n\n- Temporary checkout.\n",
+        )
+        .unwrap();
+        let relocated = request.set_local_manifest(copied.local_manifest()).unwrap();
+        let (path, text) = prepare(&relocated, &PackagesUpdate::new(vec![]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(path, copied_root.join("docs/WORKSPACE.md"));
+        assert!(text.contains("Temporary checkout."));
+        assert!(!text.contains("Original checkout."));
+        assert!(text.contains("../a/CHANGELOG.md"));
+        let original_package = cargo_utils::workspace_members(relocated.cargo_metadata())
+            .unwrap()
+            .find(|p| p.name.as_str() == "a")
+            .unwrap();
+        let pending = PackagesUpdate::new(vec![(
+            original_package,
+            UpdateResult {
+                version: "1.1.0".parse().unwrap(),
+                changelog: Some("# Changelog\n\n## [1.1.0]\n\n- Pending update.\n".into()),
+                new_changelog_entry: Some("Pending update.".into()),
+                registry_version: None,
+                semver_check: SemverCheck::Skipped,
+            },
+        )]);
+        let (_, planned) = prepare(&relocated, &pending).unwrap().unwrap();
+        assert!(planned.contains("Pending update."));
+        assert!(planned.contains("### a 1.1.0"));
+        assert!(
+            prepare(
+                &relocated.with_workspace_changelog("a/CHANGELOG.md".into()),
+                &PackagesUpdate::new(vec![])
+            )
+            .is_err()
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn rollup_rejects_symlink_alias_of_package_changelog() {
@@ -368,6 +468,19 @@ mod tests {
         assert!(!second.contains("\nA\n"));
         assert_eq!(second.matches(START).count(), 1);
         assert!(replace_generated(START, "test").is_err());
+    }
+
+    #[test]
+    fn rollup_preserves_marker_examples_in_manual_code() {
+        let manual = format!(
+            "# Overview\n\nMarker example: `{START}`.\n\n```html\n{START}\nKeep this example.\n{END}\n```\n"
+        );
+        let first = replace_generated(&manual, "Generated content.\n").unwrap();
+        assert!(first.starts_with(&manual));
+        let second = replace_generated(&first, "Updated content.\n").unwrap();
+        assert!(second.starts_with(&manual));
+        assert!(!second.contains("Generated content."));
+        assert!(second.contains("Updated content."));
     }
 
     #[test]

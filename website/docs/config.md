@@ -233,6 +233,8 @@ package histories, so repeated updates do not duplicate entries. You can write a
 introduction or footer outside these markers. Packages with `release = false` or
 `changelog_update = false` are excluded. `--no-changelog` also disables the overview.
 The path must differ from every package changelog and cannot contain `..`.
+Each included package must have its own changelog path; a shared input cannot be
+attributed to independent package histories.
 
 #### The `dependencies_update` field
 
