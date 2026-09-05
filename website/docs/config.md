@@ -213,6 +213,27 @@ to customize their changelog.
 
 This field can be overridden in the [`[package]`](#the-package-section) section.
 
+#### The `workspace_changelog` field
+
+Optional path, relative to the workspace root, for an additional workspace changelog.
+Per-package changelogs remain the source of truth and are still updated normally.
+
+```toml
+[workspace]
+workspace_changelog = "docs/WORKSPACE_CHANGELOG.md"
+```
+
+The overview groups all released entries by their release date and shows each
+package's actual version. Entries without a date appear under "Undated releases";
+`Unreleased` entries are omitted. No shared workspace version is invented.
+Relative Markdown links and images are relocated to the overview's directory.
+
+Release-plz regenerates the section between its HTML comment markers from the
+package histories, so repeated updates do not duplicate entries. You can write an
+introduction or footer outside these markers. Packages with `release = false` or
+`changelog_update = false` are excluded. `--no-changelog` also disables the overview.
+The path must differ from every package changelog and cannot contain `..`.
+
 #### The `dependencies_update` field
 
 - If `true`, update all the dependencies in the `Cargo.lock` file by running `cargo update`.

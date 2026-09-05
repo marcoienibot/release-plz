@@ -52,6 +52,7 @@ pub struct UpdateRequest {
     /// Kind of git forge hosting the repository.
     forge_type: ForgeType,
     max_analyze_commits: Option<u32>,
+    workspace_changelog_path: Option<Utf8PathBuf>,
 }
 
 impl UpdateRequest {
@@ -73,7 +74,18 @@ impl UpdateRequest {
             git: None,
             forge_type: ForgeType::Github,
             max_analyze_commits: None,
+            workspace_changelog_path: None,
         })
+    }
+
+    /// Add a workspace overview while retaining independent package changelogs.
+    pub fn with_workspace_changelog(mut self, path: Utf8PathBuf) -> Self {
+        self.workspace_changelog_path = Some(path);
+        self
+    }
+
+    pub fn workspace_changelog_path(&self) -> Option<&Utf8Path> {
+        self.workspace_changelog_path.as_deref()
     }
 
     pub fn changelog_path(&self, package: &Package) -> Utf8PathBuf {

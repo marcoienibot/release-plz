@@ -55,6 +55,8 @@ tera.workspace = true
 http.workspace = true
 urlencoding.workspace = true
 git2.workspace = true
+pulldown-cmark.workspace = true
+pulldown-cmark-to-cmark.workspace = true
 
 [dev-dependencies]
 git_cmd = { path = "../git_cmd", features = ["test_fixture"] }

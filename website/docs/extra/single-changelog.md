@@ -1,5 +1,19 @@
 # Single changelog
 
+## Overview of independent package histories
+
+To keep each package's changelog and also generate a workspace overview, set:
+
+```toml
+[workspace]
+workspace_changelog = "WORKSPACE_CHANGELOG.md"
+```
+
+The overview groups entries by date and labels them with each package's own
+version. It is rebuilt from package histories without duplicating entries on
+repeated updates. See [`workspace_changelog`](../config.md#the-workspace_changelog-field)
+for path constraints, package selection and preserving manual text.
+
 ## One package
 
 If you have a workspace with multiple packages, and you want to keep

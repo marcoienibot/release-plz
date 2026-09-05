@@ -67,7 +67,8 @@
         "release_always": null,
         "release_commits": null,
         "repo_url": null,
-        "semver_check": null
+        "semver_check": null,
+        "workspace_changelog": null
       }
     }
   },
@@ -809,6 +810,14 @@
           "description": "Controls when to run cargo-semver-checks.\nIf unspecified, run cargo-semver-checks if the package is a library.",
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "workspace_changelog": {
+          "title": "Workspace Changelog",
+          "description": "Additional workspace overview, relative to the workspace root.\nRebuilt from independent package changelogs, grouped by release date.",
+          "type": [
+            "string",
             "null"
           ]
         }

@@ -61,6 +61,12 @@ impl Config {
         }
         let mut update_request =
             update_request.with_default_package_config(default_update_config.into());
+        if let Some(path) = &self.workspace.workspace_changelog
+            && !is_changelog_update_disabled
+        {
+            update_request =
+                update_request.with_workspace_changelog(to_utf8_pathbuf(path.clone())?);
+        }
         for (package, config) in self.packages() {
             let mut update_config = config.clone();
             update_config = update_config.merge(self.workspace.packages_defaults.clone());
@@ -215,6 +221,10 @@ pub struct Workspace {
     #[serde(default = "default_max_analyze_commits")]
     #[schemars(default = "default_max_analyze_commits")]
     pub max_analyze_commits: Option<u32>,
+    /// # Workspace Changelog
+    /// Additional workspace overview, relative to the workspace root.
+    /// Rebuilt from independent package changelogs, grouped by release date.
+    pub workspace_changelog: Option<PathBuf>,
 }
 
 impl Default for Workspace {
@@ -234,6 +244,7 @@ impl Default for Workspace {
             release_commits: None,
             release_always: None,
             max_analyze_commits: default_max_analyze_commits(),
+            workspace_changelog: None,
         }
     }
 }
@@ -567,6 +578,37 @@ impl From<ReleaseType> for release_plz_core::ReleaseType {
 mod tests {
     use super::*;
 
+    #[test]
+    fn workspace_rollup_config_honors_no_changelog_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join("src/lib.rs"), "").unwrap();
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = 'rollup-config-test'\nversion = '1.0.0'\nedition = '2024'\n",
+        )
+        .unwrap();
+        let manifest = to_utf8_pathbuf(temp.path().join("Cargo.toml")).unwrap();
+        let request =
+            UpdateRequest::new(cargo_utils::get_manifest_metadata(&manifest).unwrap()).unwrap();
+        let config: Config =
+            toml::from_str("[workspace]\nworkspace_changelog = 'docs/WORKSPACE.md'\n").unwrap();
+        assert_eq!(
+            config
+                .fill_update_config(false, request.clone())
+                .unwrap()
+                .workspace_changelog_path(),
+            Some(Utf8Path::new("docs/WORKSPACE.md"))
+        );
+        assert!(
+            config
+                .fill_update_config(true, request)
+                .unwrap()
+                .workspace_changelog_path()
+                .is_none()
+        );
+    }
+
     const BASE_WORKSPACE_CONFIG: &str = r#"
         [workspace]
         dependencies_update = false
@@ -615,6 +657,7 @@ mod tests {
                 release_commits: Some("^feat:".to_string()),
                 release_always: None,
                 max_analyze_commits: default_max_analyze_commits(),
+                workspace_changelog: None,
             },
             package: [].into(),
         }
@@ -740,6 +783,7 @@ mod tests {
                 release_commits: Some("^feat:".to_string()),
                 release_always: None,
                 max_analyze_commits: default_max_analyze_commits(),
+                workspace_changelog: None,
             },
             package: [PackageSpecificConfigWithName {
                 name: "crate1".to_string(),

@@ -4,6 +4,7 @@ mod packages_update;
 mod update_config;
 pub mod update_request;
 pub mod updater;
+mod workspace_changelog;
 
 use crate::{PackagePath, tmp_repo::TempRepo};
 use crate::{fs_utils, root_repo_path_from_manifest_dir};
@@ -48,8 +49,14 @@ pub async fn update(input: &UpdateRequest) -> anyhow::Result<(PackagesUpdate, Te
     // workspace dependencies.
     let all_packages: Vec<Package> = cargo_utils::workspace_members(&local_metadata)?.collect();
     let all_packages_ref: Vec<&Package> = all_packages.iter().collect();
+    // Validate and render the overview before mutating any release files.
+    let workspace_changelog = workspace_changelog::prepare(input, &packages_to_update)?;
     update_manifests(&packages_to_update, local_manifest_path, &all_packages_ref)?;
     update_changelogs(input, &packages_to_update)?;
+    if let Some((path, content)) = workspace_changelog {
+        fs_err::create_dir_all(path.parent().context("missing changelog parent")?)?;
+        fs_err::write(path, content).context("cannot write workspace changelog")?;
+    }
     if !packages_to_update.updates().is_empty() {
         let local_manifest_dir = input.local_manifest_dir()?;
         update_cargo_lock(local_manifest_dir, input.should_update_dependencies())?;
