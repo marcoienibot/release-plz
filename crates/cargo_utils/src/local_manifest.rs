@@ -55,11 +55,11 @@ impl LocalManifest {
     /// Construct the `LocalManifest` corresponding to the `Path` provided.
     pub fn try_new(path: &Utf8Path) -> anyhow::Result<Self> {
         if !path.is_absolute() {
-            anyhow::bail!("can only edit absolute paths, got {}", path);
+            anyhow::bail!("can only edit absolute paths, got {path}");
         }
         let data = fs_err::read_to_string(path).context("Failed to read manifest contents")?;
         let manifest = data.parse().context("Unable to parse Cargo.toml")?;
-        Ok(LocalManifest {
+        Ok(Self {
             manifest,
             path: path.to_owned(),
         })
@@ -213,15 +213,14 @@ impl LocalManifest {
     /// Remove references to `dep_key` if its no longer present
     pub fn gc_dep(&mut self, dep_key: &str) {
         let status = self.dep_feature(dep_key);
-        if matches!(status, FeatureStatus::None | FeatureStatus::DepFeature) {
-            if let toml_edit::Item::Table(feature_table) = &mut self.data.as_table_mut()["features"]
-            {
-                for (_feature, mut activated_crates) in feature_table.iter_mut() {
-                    if let toml_edit::Item::Value(toml_edit::Value::Array(feature_activations)) =
-                        &mut activated_crates
-                    {
-                        remove_feature_activation(feature_activations, dep_key, status);
-                    }
+        if matches!(status, FeatureStatus::None | FeatureStatus::DepFeature)
+            && let toml_edit::Item::Table(feature_table) = &mut self.data.as_table_mut()["features"]
+        {
+            for (_feature, mut activated_crates) in feature_table.iter_mut() {
+                if let toml_edit::Item::Value(toml_edit::Value::Array(feature_activations)) =
+                    &mut activated_crates
+                {
+                    remove_feature_activation(feature_activations, dep_key, status);
                 }
             }
         }
@@ -230,17 +229,17 @@ impl LocalManifest {
     fn dep_feature(&self, dep_key: &str) -> FeatureStatus {
         let mut status = FeatureStatus::None;
         for (_, tbl) in self.get_sections() {
-            if let toml_edit::Item::Table(tbl) = tbl {
-                if let Some(dep_item) = tbl.get(dep_key) {
-                    let optional = dep_item.get("optional");
-                    let optional = optional.and_then(|i| i.as_value());
-                    let optional = optional.and_then(|i| i.as_bool());
-                    let optional = optional.unwrap_or(false);
-                    if optional {
-                        return FeatureStatus::Feature;
-                    } else {
-                        status = FeatureStatus::DepFeature;
-                    }
+            if let toml_edit::Item::Table(tbl) = tbl
+                && let Some(dep_item) = tbl.get(dep_key)
+            {
+                let optional = dep_item.get("optional");
+                let optional = optional.and_then(|i| i.as_value());
+                let optional = optional.and_then(|i| i.as_bool());
+                let optional = optional.unwrap_or(false);
+                if optional {
+                    return FeatureStatus::Feature;
+                } else {
+                    status = FeatureStatus::DepFeature;
                 }
             }
         }

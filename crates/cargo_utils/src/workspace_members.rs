@@ -1,15 +1,6 @@
 use std::collections::BTreeSet;
 
-use cargo_metadata::{Metadata, Package, camino::Utf8Path};
-
-pub fn get_manifest_metadata(
-    manifest_path: &Utf8Path,
-) -> Result<cargo_metadata::Metadata, cargo_metadata::Error> {
-    cargo_metadata::MetadataCommand::new()
-        .no_deps()
-        .manifest_path(manifest_path)
-        .exec()
-}
+use cargo_metadata::{Metadata, Package};
 
 /// Lookup all members of the current workspace
 pub fn workspace_members(metadata: &Metadata) -> anyhow::Result<impl Iterator<Item = Package>> {
@@ -32,10 +23,10 @@ pub fn workspace_members(metadata: &Metadata) -> anyhow::Result<impl Iterator<It
 fn canonicalize_path(
     path: cargo_metadata::camino::Utf8PathBuf,
 ) -> cargo_metadata::camino::Utf8PathBuf {
-    if let Ok(path) = dunce::canonicalize(&path) {
-        if let Ok(path) = path.try_into() {
-            return path;
-        }
+    if let Ok(path) = dunce::canonicalize(&path)
+        && let Ok(path) = path.try_into()
+    {
+        return path;
     }
 
     path

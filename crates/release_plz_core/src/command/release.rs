@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use crate::command::trusted_publishing;
 use anyhow::Context;
 use cargo::util::VersionExt;
 use cargo_metadata::{
@@ -10,18 +11,16 @@ use cargo_metadata::{
     camino::{Utf8Path, Utf8PathBuf},
     semver::Version,
 };
-use crates_index::{GitIndex, SparseIndex};
 use git_cmd::Repo;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use serde::Serialize;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument, trace, warn};
 use url::Url;
 
 use crate::{
     CHANGELOG_FILENAME, DEFAULT_BRANCH_PREFIX, GitForge, PackagePath, Project, Publishable as _,
     ReleaseMetadata, ReleaseMetadataBuilder, Remote,
-    cargo::{CargoIndex, CargoRegistry, CmdOutput, is_published, run_cargo, wait_until_published},
-    cargo_hash_kind::get_hash_kind,
+    cargo::{CargoRegistry, CmdOutput, is_published, run_cargo_with_env, wait_until_published},
     changelog_parser,
     git::forge::GitClient,
     pr_parser::{Pr, prs_from_text},
@@ -212,14 +211,14 @@ impl ReleaseRequest {
         let publish_fields = self.packages_config.publish_overrides_fields();
 
         for package in &self.metadata.packages {
-            if !package.is_publishable() {
-                if let Some(should_publish) = publish_fields.get(&package.name) {
-                    anyhow::ensure!(
-                        !should_publish,
-                        "Package `{}` has `publish = false` or `publish = []` in the Cargo.toml, but it has `publish = true` in the release-plz configuration.",
-                        package.name
-                    );
-                }
+            if !package.is_publishable()
+                && let Some(should_publish) = publish_fields.get(package.name.as_str())
+            {
+                anyhow::ensure!(
+                    !should_publish,
+                    "Package `{}` has `publish = false` or `publish = []` in the Cargo.toml, but it has `publish = true` in the release-plz configuration.",
+                    package.name
+                );
             }
         }
         Ok(())
@@ -543,16 +542,22 @@ pub async fn release(input: &ReleaseRequest) -> anyhow::Result<Option<Release>> 
     let repo = Repo::new(&input.metadata.workspace_root)?;
     let git_client = get_git_client(input)?;
     let should_release = should_release(input, &repo, &git_client).await?;
+    debug!("should release: {should_release:?}");
+
     if should_release == ShouldRelease::No {
+        debug!("skipping release");
         return Ok(None);
     }
 
     let mut checkout_done = false;
     if let ShouldRelease::YesWithCommit(commit) = &should_release {
-        // The commit does not exist if the PR was squashed.
-        if let Ok(()) = repo.checkout(commit) {
-            debug!("releasing commit {commit}");
-            checkout_done = true;
+        match repo.checkout(commit) {
+            Ok(()) => {
+                debug!("checking out commit {commit}");
+                checkout_done = true;
+            }
+            // The commit does not exist if the PR was squashed.
+            Err(_) => trace!("checkout failed; continuing"),
         }
     }
 
@@ -564,6 +569,7 @@ pub async fn release(input: &ReleaseRequest) -> anyhow::Result<Option<Release>> 
         // the repository in the same commit they launched release-plz.
         if checkout_done {
             repo.checkout("-")?;
+            trace!("restored previous commit after release");
         }
     }
 
@@ -578,14 +584,31 @@ async fn release_packages(
 ) -> anyhow::Result<Option<Release>> {
     // Packages are already ordered by release order.
     let packages = project.publishable_packages();
+    if packages.is_empty() {
+        info!("nothing to release");
+    }
+
     let mut package_releases: Vec<PackageRelease> = vec![];
-    let hash_kind = get_hash_kind()?;
+    // The same trusted publishing token can be used for all packages.
+    let mut trusted_publishing_client: Option<trusted_publishing::TrustedPublisher> = None;
     for package in packages {
-        if let Some(pkg_release) =
-            release_package_if_needed(input, project, package, repo, git_client, &hash_kind).await?
+        if let Some(pkg_release) = release_package_if_needed(
+            input,
+            project,
+            package,
+            repo,
+            git_client,
+            &mut trusted_publishing_client,
+        )
+        .await?
         {
             package_releases.push(pkg_release);
         }
+    }
+    if let Some(tp) = trusted_publishing_client.as_ref()
+        && let Err(e) = tp.revoke_token().await
+    {
+        warn!("Failed to revoke trusted publishing token: {e:?}");
     }
     let release = (!package_releases.is_empty()).then_some(Release {
         releases: package_releases,
@@ -599,7 +622,7 @@ async fn release_package_if_needed(
     package: &Package,
     repo: &Repo,
     git_client: &GitClient,
-    hash_kind: &crates_index::HashKind,
+    trusted_publishing_client: &mut Option<trusted_publishing::TrustedPublisher>,
 ) -> anyhow::Result<Option<PackageRelease>> {
     let git_tag = project.git_tag(&package.name, &package.version.to_string())?;
     let release_name = project.release_name(&package.name, &package.version.to_string())?;
@@ -611,9 +634,6 @@ async fn release_package_if_needed(
         return Ok(None);
     }
 
-    let registry_indexes = registry_indexes(package, input.registry.clone(), hash_kind)
-        .context("can't determine registry indexes")?;
-    let mut package_was_released = false;
     let changelog = last_changelog_entry(input, package);
     let prs = prs_from_text(&changelog);
     let release_info = ReleaseInfo {
@@ -623,26 +643,64 @@ async fn release_package_if_needed(
         changelog: &changelog,
         prs: &prs,
     };
-    for CargoRegistry { name, mut index } in registry_indexes {
-        let token = input.find_registry_token(name.as_deref())?;
-        if is_published(&mut index, package, input.publish_timeout, &token)
-            .await
-            .context("can't determine if package is published")?
-        {
-            info!("{} {}: already published", package.name, package.version);
-            continue;
-        }
-        let package_was_released_at_index =
-            release_package(&mut index, input, repo, git_client, &release_info, &token)
-                .await
-                .context("failed to release package")?;
 
-        if package_was_released_at_index {
+    let should_publish = input.is_publish_enabled(&package.name);
+    let mut package_was_released = false;
+
+    if should_publish {
+        let registry_indexes = registry_indexes(package, input.registry.clone())
+            .context("can't determine registry indexes")?;
+
+        for CargoRegistry { name, index_url } in registry_indexes {
+            let token = input.find_registry_token(name.as_deref())?;
+            let pkg_is_published = is_published(
+                &input.metadata.workspace_root,
+                package,
+                input.publish_timeout,
+                name.as_deref(),
+                index_url.as_ref(),
+                token.as_ref(),
+            )
+            .await
+            .with_context(|| format!("can't determine if package {} is published", package.name))?;
+
+            if pkg_is_published {
+                info!("{} {}: already published", package.name, package.version);
+                continue;
+            }
+            let package_was_released_at_index = release_package(
+                input,
+                repo,
+                git_client,
+                &release_info,
+                token.as_ref(),
+                name.as_deref(),
+                trusted_publishing_client,
+                name.as_deref(),
+                index_url.as_ref(),
+            )
+            .await
+            .context("failed to release package")?;
+
+            if package_was_released_at_index {
+                package_was_released = true;
+            }
+        }
+    } else {
+        // When publishing is disabled (e.g., git_only mode), skip registry checks entirely
+        // and only perform git tag/release operations.
+        let package_was_released_result =
+            release_package_git_only(input, repo, git_client, &release_info)
+                .await
+                .context("failed to release package (git-only)")?;
+
+        if package_was_released_result {
             package_was_released = true;
         }
     }
+
     let package_release = package_was_released.then_some(PackageRelease {
-        package_name: package.name.clone(),
+        package_name: package.name.to_string(),
         version: package.version.clone(),
         tag: git_tag,
         prs,
@@ -714,7 +772,6 @@ fn is_pr_commit_in_original_branch(repo: &Repo, commit: &crate::git::forge::PrCo
 fn registry_indexes(
     package: &Package,
     registry: Option<String>,
-    hash_kind: &crates_index::HashKind,
 ) -> anyhow::Result<Vec<CargoRegistry>> {
     let registries = registry
         .map(|r| vec![r])
@@ -730,23 +787,15 @@ fn registry_indexes(
 
     let mut registry_indexes = registry_urls
         .into_iter()
-        .map(|(registry, u)| {
-            if u.to_string().starts_with("sparse+") {
-                SparseIndex::from_url_with_hash_kind(u.as_str(), hash_kind).map(CargoIndex::Sparse)
-            } else {
-                GitIndex::from_url_with_hash_kind(&format!("registry+{u}"), hash_kind)
-                    .map(CargoIndex::Git)
-            }
-            .map(|index| CargoRegistry {
-                name: Some(registry),
-                index,
-            })
+        .map(|(registry, u)| CargoRegistry {
+            name: Some(registry),
+            index_url: Some(u),
         })
-        .collect::<Result<Vec<CargoRegistry>, crates_index::Error>>()?;
+        .collect::<Vec<CargoRegistry>>();
     if registry_indexes.is_empty() {
         registry_indexes.push(CargoRegistry {
             name: None,
-            index: CargoIndex::Git(GitIndex::new_cargo_default()?),
+            index_url: None,
         });
     }
     Ok(registry_indexes)
@@ -761,35 +810,66 @@ struct ReleaseInfo<'a> {
 }
 
 /// Return `true` if package was published, `false` otherwise.
+#[allow(clippy::too_many_arguments)]
 async fn release_package(
-    index: &mut CargoIndex,
     input: &ReleaseRequest,
     repo: &Repo,
     git_client: &GitClient,
     release_info: &ReleaseInfo<'_>,
-    token: &Option<SecretString>,
+    token: Option<&SecretString>,
+    registry_name: Option<&str>,
+    trusted_publishing_client: &mut Option<trusted_publishing::TrustedPublisher>,
+    registry: Option<&str>,
+    index_url: Option<&Url>,
 ) -> anyhow::Result<bool> {
     let workspace_root = &input.metadata.workspace_root;
+    let is_crates_io = registry_name.is_none() || registry_name == Some("crates-io");
 
     let should_publish = input.is_publish_enabled(&release_info.package.name);
     let should_create_git_tag = input.is_git_tag_enabled(&release_info.package.name);
-    let should_create_git_relase = input.is_git_release_enabled(&release_info.package.name);
+    let should_create_git_release = input.is_git_release_enabled(&release_info.package.name);
+
+    let mut publish_token: Option<SecretString> = token.cloned();
+    let should_use_trusted_publishing = {
+        let is_github_actions = std::env::var("GITHUB_ACTIONS").is_ok();
+        publish_token.is_none()
+            && input.token.is_none()
+            && is_crates_io
+            && should_publish
+            && !input.dry_run
+            && is_github_actions
+    };
+    if should_use_trusted_publishing {
+        if let Some(tp) = trusted_publishing_client.as_ref() {
+            publish_token = Some(tp.token().clone());
+        } else {
+            match trusted_publishing::TrustedPublisher::crates_io().await {
+                Ok(tp) => {
+                    publish_token = Some(tp.token().clone());
+                    *trusted_publishing_client = Some(tp);
+                }
+                Err(e) => {
+                    warn!("Failed to use trusted publishing: {e:#}. Proceeding without it.");
+                }
+            }
+        }
+    }
 
     if should_publish {
         // Run `cargo publish`. Note that `--dry-run` is added if `input.dry_run` is true.
-        let output = run_cargo_publish(release_info.package, input, workspace_root)
-            .context("failed to run cargo publish")?;
+        let output = run_cargo_publish(
+            release_info.package,
+            input,
+            workspace_root,
+            &publish_token,
+            registry_name,
+        )
+        .context("failed to run cargo publish")?;
         if !output.status.success()
             || !output.stderr.contains("Uploading")
             || output.stderr.contains("error:")
         {
-            if output.stderr.contains(&format!(
-                "crate version `{}` is already uploaded",
-                &release_info.package.version,
-            )) {
-                // The crate was published while `cargo publish` was running.
-                // Note that the crate wasn't published yet when `cargo publish` started,
-                // otherwise `cargo` would have returned the error "crate {package}@{version} already exists"
+            if is_already_published(&output, release_info) {
                 info!(
                     "skipping publish of {} {}: already published",
                     release_info.package.name, release_info.package.version
@@ -810,50 +890,31 @@ async fn release_package(
             release_info,
             should_publish,
             should_create_git_tag,
-            should_create_git_relase,
+            should_create_git_release,
         );
         Ok(false)
     } else {
         if should_publish {
-            wait_until_published(index, release_info.package, input.publish_timeout, token).await?;
+            wait_until_published(
+                workspace_root,
+                release_info.package,
+                input.publish_timeout,
+                registry,
+                index_url,
+                token,
+            )
+            .await?;
         }
 
-        if should_create_git_tag {
-            // Use same tag message of cargo-release
-            let message = format!(
-                "chore: Release package {} version {}",
-                release_info.package.name, release_info.package.version
-            );
-            repo.tag(release_info.git_tag, &message)?;
-            repo.push(release_info.git_tag)?;
-        }
-
-        let contributors = get_contributors(release_info, git_client).await;
-
-        // TODO fill the rest
-        let remote = Remote {
-            owner: "".to_string(),
-            repo: "".to_string(),
-            link: "".to_string(),
-            contributors,
-        };
-        if should_create_git_relase {
-            let release_body =
-                release_body(input, release_info.package, release_info.changelog, &remote);
-            let release_config = input
-                .get_package_config(&release_info.package.name)
-                .git_release;
-            let is_pre_release = release_config.is_pre_release(&release_info.package.version);
-            let git_release_info = GitReleaseInfo {
-                git_tag: release_info.git_tag.to_string(),
-                release_name: release_info.release_name.to_string(),
-                release_body,
-                draft: release_config.draft,
-                latest: release_config.latest,
-                pre_release: is_pre_release,
-            };
-            git_client.create_release(&git_release_info).await?;
-        }
+        create_git_tag_and_release(
+            input,
+            repo,
+            git_client,
+            release_info,
+            should_create_git_tag,
+            should_create_git_release,
+        )
+        .await?;
 
         info!(
             "published {} {}",
@@ -861,6 +922,125 @@ async fn release_package(
         );
         Ok(true)
     }
+}
+
+fn is_already_published(output: &CmdOutput, release_info: &ReleaseInfo<'_>) -> bool {
+    // Error happening if the crate was published while `cargo publish` was running.
+    let already_uploaded_message = format!(
+        "crate version `{}` is already uploaded",
+        release_info.package.version
+    );
+
+    // Previously, I thought that this error
+    // would happen only if the crate wasn't published yet when `cargo publish` started,
+    // but then I saw this error in CI while releasing the crate for the first time.
+    let already_exists_message = format!(
+        "crate {}@{} already exists",
+        release_info.package.name, release_info.package.version
+    );
+    [already_uploaded_message, already_exists_message]
+        .iter()
+        .any(|message| output.stderr.contains(message))
+}
+
+/// Release a package without publishing to any registry (git-only mode).
+/// This only creates git tags and git releases.
+///
+/// Return `true` if package was released, `false` otherwise.
+async fn release_package_git_only(
+    input: &ReleaseRequest,
+    repo: &Repo,
+    git_client: &GitClient,
+    release_info: &ReleaseInfo<'_>,
+) -> anyhow::Result<bool> {
+    let should_create_git_tag = input.is_git_tag_enabled(&release_info.package.name);
+    let should_create_git_release = input.is_git_release_enabled(&release_info.package.name);
+
+    if input.dry_run {
+        log_dry_run_info(
+            release_info,
+            false, // should_publish is always false in git-only mode
+            should_create_git_tag,
+            should_create_git_release,
+        );
+        Ok(false)
+    } else {
+        create_git_tag_and_release(
+            input,
+            repo,
+            git_client,
+            release_info,
+            should_create_git_tag,
+            should_create_git_release,
+        )
+        .await?;
+
+        info!(
+            "released {} {} (git-only)",
+            release_info.package.name, release_info.package.version
+        );
+        Ok(true)
+    }
+}
+
+/// Create git tag and/or git release for a package.
+async fn create_git_tag_and_release(
+    input: &ReleaseRequest,
+    repo: &Repo,
+    git_client: &GitClient,
+    release_info: &ReleaseInfo<'_>,
+    should_create_git_tag: bool,
+    should_create_git_release: bool,
+) -> anyhow::Result<()> {
+    if should_create_git_tag {
+        // Use same tag message of cargo-release
+        let message = format!(
+            "chore: Release package {} version {}",
+            release_info.package.name, release_info.package.version
+        );
+        let should_sign_tags = repo
+            .git(&["config", "--default", "false", "--get", "tag.gpgSign"])
+            .map(|s| s.trim() == "true")?;
+        // If tag signing is enabled, create the tag locally instead of using the API
+        if should_sign_tags {
+            repo.tag(release_info.git_tag, &message)?;
+            repo.push(release_info.git_tag)?;
+        } else {
+            let sha = repo.current_commit_hash()?;
+            git_client
+                .create_tag(release_info.git_tag, &message, &sha)
+                .await?;
+        }
+    }
+
+    if should_create_git_release {
+        let contributors = get_contributors(release_info, git_client).await;
+
+        // TODO fill the rest
+        let remote = Remote {
+            owner: String::new(),
+            repo: String::new(),
+            link: String::new(),
+            contributors,
+        };
+        let release_body =
+            release_body(input, release_info.package, release_info.changelog, &remote);
+        let release_config = input
+            .get_package_config(&release_info.package.name)
+            .git_release;
+        let is_pre_release = release_config.is_pre_release(&release_info.package.version);
+        let git_release_info = GitReleaseInfo {
+            git_tag: release_info.git_tag.to_string(),
+            release_name: release_info.release_name.to_string(),
+            release_body,
+            draft: release_config.draft,
+            latest: release_config.latest,
+            pre_release: is_pre_release,
+        };
+        git_client.create_release(&git_release_info).await?;
+    }
+
+    Ok(())
 }
 
 /// Traces the steps that would have been taken had release been run without dry-run.
@@ -945,7 +1125,7 @@ pub struct GitReleaseInfo {
     pub pre_release: bool,
 }
 
-/// Return `Err` if the `CARGO_REGISTRY_TOKEN` environment variable is set to an empty string in CI.
+/// Return `Err` if the cargo registry token environment variable is set to an empty string in CI.
 /// Reason:
 /// - If the token is set to an empty string, probably the user forgot to set the
 ///   secret in GitHub actions.
@@ -954,20 +1134,29 @@ pub struct GitReleaseInfo {
 ///   need a release that don't have the token set.
 /// - If the token is unset, the user might want to log in to the registry
 ///   with `cargo login`. Don't throw an error in this case.
-fn verify_ci_cargo_registry_token() -> anyhow::Result<()> {
-    let is_token_empty = std::env::var("CARGO_REGISTRY_TOKEN").map(|t| t.is_empty()) == Ok(true);
+fn verify_ci_cargo_registry_token(token_env_var: &str) -> anyhow::Result<()> {
+    let is_token_empty = std::env::var(token_env_var).map(|t| t.is_empty()) == Ok(true);
     let is_environment_github_actions = std::env::var("GITHUB_ACTIONS").is_ok();
     anyhow::ensure!(
         !(is_environment_github_actions && is_token_empty),
-        "CARGO_REGISTRY_TOKEN environment variable is set to empty string. Please set your token in GitHub actions secrets. Docs: https://release-plz.dev/docs/github/quickstart#2-set-the-cargo_registry_token-secret"
+        "{token_env_var} environment variable is set to empty string. Please set your token in GitHub actions secrets. Docs: https://release-plz.dev/docs/github/quickstart#2-set-the-cargo_registry_token-secret"
     );
     Ok(())
+}
+
+fn cargo_registry_token_env_var(registry: Option<&str>) -> anyhow::Result<String> {
+    match registry {
+        Some(registry) => cargo_utils::cargo_registries_token_env_var_name(registry),
+        None => Ok("CARGO_REGISTRY_TOKEN".to_string()),
+    }
 }
 
 fn run_cargo_publish(
     package: &Package,
     input: &ReleaseRequest,
     workspace_root: &Utf8Path,
+    token: &Option<SecretString>,
+    registry: Option<&str>,
 ) -> anyhow::Result<CmdOutput> {
     let mut args = vec!["publish"];
     args.push("--color");
@@ -982,11 +1171,10 @@ fn run_cargo_publish(
         args.push("--registry");
         args.push(registry);
     }
-    if let Some(token) = &input.token {
-        args.push("--token");
-        args.push(token.expose_secret());
-    } else {
-        verify_ci_cargo_registry_token()?;
+    let token_env_var = cargo_registry_token_env_var(registry)?;
+    let token = token.as_ref().or(input.token.as_ref());
+    if token.is_none() {
+        verify_ci_cargo_registry_token(&token_env_var)?;
     }
     if input.dry_run {
         args.push("--dry-run");
@@ -1005,7 +1193,10 @@ fn run_cargo_publish(
     if input.all_features(&package.name) {
         args.push("--all-features");
     }
-    run_cargo(workspace_root, &args)
+    let envs = token
+        .map(|token| vec![(token_env_var, token.clone())])
+        .unwrap_or_default();
+    run_cargo_with_env(workspace_root, &args, &envs)
 }
 
 /// Return an empty string if the changelog cannot be parsed.
@@ -1063,6 +1254,7 @@ fn last_changelog_entry(req: &ReleaseRequest, package: &Package) -> String {
 
 #[cfg(test)]
 mod tests {
+    use secrecy::ExposeSecret as _;
     use std::env;
     use std::ffi::OsStr;
     use std::sync::{LazyLock, Mutex};
@@ -1137,7 +1329,8 @@ mod tests {
     fn release_request_registry_token_env_works() {
         let registry_name = "my_registry";
         let token = "t0p$eCrEt";
-        let token_env_var = format!("CARGO_REGISTRIES_{}_TOKEN", registry_name.to_uppercase());
+        let token_env_var =
+            cargo_utils::cargo_registries_token_env_var_name(registry_name).unwrap();
 
         with_env_var(&token_env_var, token, || {
             let request = ReleaseRequest::new(fake_metadata()).with_registry(registry_name);

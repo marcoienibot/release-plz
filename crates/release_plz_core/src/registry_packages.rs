@@ -8,7 +8,7 @@ use tempfile::{TempDir, tempdir};
 
 use crate::{PackagePath, cargo_vcs_info, download, next_ver};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PackagesCollection {
     packages: BTreeMap<String, RegistryPackage>,
     /// Packages might be downloaded and stored in a temporary directory.
@@ -24,6 +24,10 @@ pub struct RegistryPackage {
 }
 
 impl RegistryPackage {
+    pub fn new(package: Package, sha1: Option<String>) -> Self {
+        Self { package, sha1 }
+    }
+
     pub fn published_at_sha1(&self) -> Option<&str> {
         self.sha1.as_deref()
     }
@@ -37,6 +41,11 @@ impl PackagesCollection {
     pub fn get_registry_package(&self, package_name: &str) -> Option<&RegistryPackage> {
         self.packages.get(package_name)
     }
+
+    pub fn with_packages(mut self, packages: BTreeMap<String, RegistryPackage>) -> Self {
+        self.packages = packages;
+        self
+    }
 }
 
 /// Retrieve the latest version of the packages.
@@ -47,7 +56,7 @@ impl PackagesCollection {
 ///
 /// - If `registry` is provided, the packages are downloaded from the specified registry.
 /// - Otherwise, the packages are downloaded from crates.io.
-pub fn get_registry_packages(
+pub async fn get_registry_packages(
     registry_manifest: Option<&Utf8Path>,
     local_packages: &[&Package],
     registry: Option<&str>,
@@ -68,7 +77,7 @@ pub fn get_registry_packages(
             let directory = temp_dir.as_ref().to_str().context("invalid tempdir path")?;
 
             let registry_packages =
-                download_packages_from_registry(local_packages, registry, directory)?;
+                download_packages_from_registry(local_packages, registry, directory).await?;
 
             // After downloading the package, we initialize a git repo in the package.
             // This is because if cargo doesn't find a git repo in the package, it doesn't
@@ -81,7 +90,7 @@ pub fn get_registry_packages(
     let registry_packages: BTreeMap<String, RegistryPackage> = registry_packages
         .into_iter()
         .map(|c| {
-            let package_name = c.package.name.clone();
+            let package_name = c.package.name.to_string();
             (package_name, c)
         })
         .collect();
@@ -91,7 +100,7 @@ pub fn get_registry_packages(
     })
 }
 
-fn download_packages_from_registry(
+async fn download_packages_from_registry(
     local_packages: &[&Package],
     registry: Option<&str>,
     directory: &str,
@@ -107,29 +116,29 @@ fn download_packages_from_registry(
         })
     });
 
-    // Clone from the different registries in parallel
-    std::thread::scope(|scope| {
-        let mut registry_packages: Vec<Package> = vec![];
-        let mut handles = Vec::new();
-        for (registry, packages) in &packages_grouped_by_registry {
-            let packages_names: Vec<&str> = packages.map(|p| p.name.as_str()).collect();
-            let mut downloader = download::PackageDownloader::new(packages_names, directory);
-            if let Some(registry) = registry {
-                downloader = downloader.with_registry(registry.to_string());
-            }
-            let handle = scope.spawn(move || downloader.download());
-            handles.push(handle);
+    let mut downloaders = Vec::new();
+    for (registry, packages) in &packages_grouped_by_registry {
+        let packages_names: Vec<&str> = packages.map(|p| p.name.as_str()).collect();
+        let mut downloader = download::PackageDownloader::new(packages_names, directory);
+        if let Some(registry) = registry {
+            downloader = downloader.with_registry(registry.to_string());
         }
+        downloaders.push(downloader);
+    }
 
-        for handle in handles {
-            let downloaded_packages = handle
-                .join()
-                .expect("Panicked while downloading packages")
-                .context("Failed to download packages")?;
-            registry_packages.extend(downloaded_packages);
-        }
-        Ok(registry_packages)
-    })
+    let mut registry_packages = Vec::new();
+    for downloader in &downloaders {
+        // Download registry groups sequentially. `Cloner::clone` holds Cargo's
+        // blocking package-cache lock while awaiting registry queries, so polling
+        // multiple downloads in the same async task can deadlock.
+        let packages = downloader
+            .download()
+            .await
+            .context("Failed to download packages")?;
+        registry_packages.extend(packages);
+    }
+
+    Ok(registry_packages)
 }
 
 fn initialize_registry_package(packages: Vec<Package>) -> anyhow::Result<Vec<RegistryPackage>> {
@@ -152,14 +161,14 @@ fn initialize_registry_package(packages: Vec<Package>) -> anyhow::Result<Vec<Reg
         if !git_repo.exists() {
             git_in_dir(package_path, &["init"])?;
             git_in_dir(package_path, &["add", "."])?;
-            if let Err(e) = commit_init() {
-                if e.to_string().trim().starts_with("Author identity unknown") {
-                    // we can use any email and name here, as this repository is only used
-                    // to compare packages
-                    git_in_dir(package_path, &["config", "user.email", "test@registry"])?;
-                    git_in_dir(package_path, &["config", "user.name", "test"])?;
-                    commit_init()?;
-                }
+            if let Err(e) = commit_init()
+                && e.to_string().trim().starts_with("Author identity unknown")
+            {
+                // we can use any email and name here, as this repository is only used
+                // to compare packages
+                git_in_dir(package_path, &["config", "user.email", "test@registry"])?;
+                git_in_dir(package_path, &["config", "user.name", "test"])?;
+                commit_init()?;
             }
         }
         registry_packages.push(RegistryPackage { package: p, sha1 });

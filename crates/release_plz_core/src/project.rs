@@ -10,7 +10,7 @@ use tracing::debug;
 
 use crate::{
     PackagePath as _,
-    tera::{PACKAGE_VAR, VERSION_VAR, tera_context, tera_var},
+    tera::{default_tag_name_template, tera_context},
 };
 use crate::{
     Publishable as _, ReleaseMetadata, ReleaseMetadataBuilder, copy_to_temp_dir,
@@ -22,7 +22,7 @@ use crate::{
     workspace_packages,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Project {
     /// Publishable packages.
     packages: Vec<Package>,
@@ -62,13 +62,13 @@ impl Project {
         override_packages_path(&mut packages, metadata, &manifest_dir)
             .context("failed to override packages path")?;
 
-        let packages_names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
+        let packages_names: Vec<String> = packages.iter().map(|p| p.name.to_string()).collect();
         packages.retain(|p| {
             let release_metadata =
                 release_metadata_builder
                     .get_release_metadata(&p.name)
                     .map(|m| {
-                        release_metadata.insert(p.name.clone(), m);
+                        release_metadata.insert(p.name.to_string(), m);
                     });
             release_metadata.is_some()
         });
@@ -80,11 +80,10 @@ impl Project {
         let contains_multiple_pub_packages = packages.len() > 1;
 
         if let Some(pac) = single_package {
-            packages.retain(|p| p.name == pac);
+            packages.retain(|p| *p.name == pac);
             anyhow::ensure!(
                 !packages.is_empty(),
-                "package `{}` not found. If it exists, is it public?",
-                pac
+                "package `{pac}` not found. If it exists, is it public?"
             );
         }
 
@@ -163,13 +162,8 @@ impl Project {
             ),
         };
 
-        let template = template.unwrap_or({
-            if self.contains_multiple_pub_packages {
-                format!("{}-v{}", tera_var(PACKAGE_VAR), tera_var(VERSION_VAR))
-            } else {
-                format!("v{}", tera_var(VERSION_VAR))
-            }
-        });
+        let template = template
+            .unwrap_or_else(|| default_tag_name_template(self.contains_multiple_pub_packages));
 
         let context = tera_context(package_name, version);
         crate::tera::render_template(&template, &context, template_name)
@@ -185,8 +179,11 @@ impl Project {
         let mut missing_version_errors = Vec::new();
 
         for package in &self.publishable_packages() {
-            if package.license.is_none() {
-                missing_fields.push(format!("- `license` for package `{}`", package.name));
+            if package.license.is_none() && package.license_file.is_none() {
+                missing_fields.push(format!(
+                    "- `license` or `license-file` for package `{}`",
+                    package.name
+                ));
             }
             if package.description.is_none() {
                 missing_fields.push(format!("- `description` for package `{}`", package.name));
@@ -412,6 +409,15 @@ mod tests {
             result.unwrap_err().to_string(),
             "The following overrides are not present in the workspace: `typo_tesst`. Check for typos"
         );
+    }
+
+    #[test]
+    fn test_license_file() {
+        let local_manifest = Utf8Path::new("../../tests/fixtures/non-standard-license/Cargo.toml");
+        let project = get_project(local_manifest, None, &HashSet::default(), true, None, None)
+            .expect("Should be ok");
+        let result = project.check_mandatory_fields();
+        assert!(result.is_ok());
     }
 
     #[test]

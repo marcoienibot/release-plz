@@ -3,6 +3,7 @@ use crate::{GitHub, GitReleaseInfo};
 use std::collections::{HashMap, HashSet};
 
 use crate::pr::Pr;
+use crate::response_ext::ResponseExt;
 use anyhow::Context;
 use http::StatusCode;
 use itertools::Itertools;
@@ -25,9 +26,17 @@ pub enum GitForge {
 impl GitForge {
     fn default_headers(&self) -> anyhow::Result<HeaderMap> {
         match self {
-            GitForge::Github(g) => g.default_headers(),
-            GitForge::Gitea(g) => g.default_headers(),
-            GitForge::Gitlab(g) => g.default_headers(),
+            Self::Github(g) => g.default_headers(),
+            Self::Gitea(g) => g.default_headers(),
+            Self::Gitlab(g) => g.default_headers(),
+        }
+    }
+
+    pub fn forge_type(&self) -> ForgeType {
+        match self {
+            Self::Github(_) => ForgeType::Github,
+            Self::Gitea(_) => ForgeType::Gitea,
+            Self::Gitlab(_) => ForgeType::Gitlab,
         }
     }
 }
@@ -68,6 +77,7 @@ pub struct PrCommit {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Author {
+    pub id: i32,
     pub login: String,
 }
 
@@ -79,7 +89,7 @@ pub struct GitLabMrCommit {
 
 impl From<GitLabMrCommit> for PrCommit {
     fn from(value: GitLabMrCommit) -> Self {
-        PrCommit {
+        Self {
             author: None,
             sha: value.id,
         }
@@ -142,7 +152,7 @@ impl From<GitLabMr> for GitPr {
             .map(|l| Label { name: l, id: None })
             .collect();
 
-        GitPr {
+        Self {
             number: value.iid,
             html_url: value.web_url,
             head: Commit {
@@ -152,6 +162,7 @@ impl From<GitLabMr> for GitPr {
             title: value.title,
             body,
             user: Author {
+                id: value.author.id,
                 login: value.author.username,
             },
             labels,
@@ -174,6 +185,7 @@ pub struct GitLabMr {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct GitLabAuthor {
+    pub id: i32,
     pub username: String,
 }
 
@@ -182,8 +194,9 @@ impl From<GitPr> for GitLabMr {
         let desc = value.body.unwrap_or_default();
         let labels: Vec<String> = value.labels.into_iter().map(|l| l.name).collect();
 
-        GitLabMr {
+        Self {
             author: GitLabAuthor {
+                id: value.user.id,
                 username: value.user.login,
             },
             iid: value.number,
@@ -233,7 +246,7 @@ pub struct PrEdit {
 
 impl From<PrEdit> for GitLabMrEdit {
     fn from(value: PrEdit) -> Self {
-        GitLabMrEdit {
+        Self {
             title: value.title,
             description: value.body,
             state_event: value.state,
@@ -270,8 +283,7 @@ impl GitClient {
     pub fn new(forge: GitForge) -> anyhow::Result<Self> {
         let client = {
             let headers = forge.default_headers()?;
-            let reqwest_client = reqwest::Client::builder()
-                .user_agent("release-plz")
+            let reqwest_client = crate::http_client::http_client_builder()
                 .default_headers(headers)
                 .build()
                 .context("can't build Git client")?;
@@ -289,8 +301,8 @@ impl GitClient {
             GitForge::Gitlab(g) => (ForgeType::Gitlab, g.remote),
         };
         Ok(Self {
-            remote,
             forge,
+            remote,
             client,
         })
     }
@@ -331,12 +343,12 @@ impl GitClient {
             .await?
             .error_for_status()
             .map_err(|e| {
-                if let Some(status) = e.status() {
-                    if status == reqwest::StatusCode::FORBIDDEN {
-                        return anyhow::anyhow!(e).context(
-                            "Make sure your token has sufficient permissions. Learn more at https://release-plz.dev/docs/usage/release or https://release-plz.dev/docs/github/token",
-                        );
-                    }
+                if let Some(status) = e.status()
+                    && status == reqwest::StatusCode::FORBIDDEN
+                {
+                    return anyhow::anyhow!(e).context(
+                        "Make sure your token has sufficient permissions. Learn more at https://release-plz.dev/docs/usage/release or https://release-plz.dev/docs/github/token",
+                    );
                 }
                 anyhow::anyhow!(e)
             })?;
@@ -362,13 +374,13 @@ impl GitClient {
             .await?
             .error_for_status()
             .map_err(|e| {
-                if let Some(status) = e.status() {
-                    if status == reqwest::StatusCode::FORBIDDEN {
+                if let Some(status) = e.status()
+                    && status == reqwest::StatusCode::FORBIDDEN {
                         return anyhow::anyhow!(e).context(
                             "Make sure your token has sufficient permissions. Learn more at https://release-plz.dev/docs/usage/release#gitlab",
                         );
                     }
-                }
+
                 anyhow::anyhow!(e)
             })?;
         Ok(())
@@ -438,12 +450,17 @@ impl GitClient {
     }
 
     async fn opened_prs_page(&self, page: i32, page_size: usize) -> anyhow::Result<Vec<GitPr>> {
+        let mut url = Url::parse(&self.pulls_url()).context("invalid pulls URL")?;
+        {
+            let mut qp = url.query_pairs_mut();
+            qp.append_pair("state", self.param_value_pr_state_open());
+            qp.append_pair("page", &page.to_string());
+            qp.append_pair(self.per_page(), &page_size.to_string());
+        }
+
         let resp = self
             .client
-            .get(self.pulls_url())
-            .query(&[("state", self.param_value_pr_state_open())])
-            .query(&[("page", page)])
-            .query(&[(self.per_page(), page_size)])
+            .get(url)
             .send()
             .await?
             .successful_status()
@@ -642,7 +659,8 @@ impl GitClient {
             .get(format!("{}/labels", self.repo_url()))
             .send()
             .await?
-            .error_for_status()?
+            .successful_status()
+            .await?
             .json()
             .await
             .context("failed to parse labels")
@@ -691,7 +709,7 @@ impl GitClient {
                 None => {
                     // The label doesn't exist in the repository, so we need to create it.
                     if !labels_to_create.contains(label) {
-                        labels_to_create.push(label.to_string());
+                        labels_to_create.push(label.clone());
                     }
                 }
             }
@@ -810,7 +828,7 @@ impl GitClient {
             );
             return Ok(vec![]);
         }
-        let response = response.error_for_status()?;
+        let response = response.successful_status().await?;
         debug!("Associated PR found. Status: {}", response.status());
 
         let prs = match self.forge {
@@ -865,13 +883,13 @@ impl GitClient {
         let api_path = self.commits_api_path(commit);
         let response = self.client.get(api_path).send().await?;
 
-        if let Err(err) = response.error_for_status_ref() {
-            if let Some(StatusCode::NOT_FOUND | StatusCode::UNPROCESSABLE_ENTITY) = err.status() {
-                // The user didn't push the commit to the remote repository.
-                // This can happen if people need to do edits before running release-plz (e.g. cargo hakari).
-                // I'm not sure why GitHub returns 422 if the commit doesn't exist.
-                return Ok(RemoteCommit { username: None });
-            }
+        if let Err(err) = response.error_for_status_ref()
+            && let Some(StatusCode::NOT_FOUND | StatusCode::UNPROCESSABLE_ENTITY) = err.status()
+        {
+            // The user didn't push the commit to the remote repository.
+            // This can happen if people need to do edits before running release-plz (e.g. cargo hakari).
+            // I'm not sure why GitHub returns 422 if the commit doesn't exist.
+            return Ok(RemoteCommit { username: None });
         }
 
         let remote_commit: GitHubCommit = response
@@ -897,6 +915,208 @@ impl GitClient {
             }
         };
         format!("{}/{commits_api_path}{commit}", self.repo_url())
+    }
+
+    /// Create a new branch from the given SHA.
+    pub async fn create_branch(&self, branch_name: &str, sha: &str) -> anyhow::Result<()> {
+        match self.forge {
+            ForgeType::Github => {
+                self.post_github_ref(&format!("refs/heads/{branch_name}"), sha)
+                    .await
+            }
+            ForgeType::Gitlab => self.post_gitlab_branch(branch_name, sha).await,
+            ForgeType::Gitea => self.post_gitea_branch(branch_name, sha).await,
+        }
+    }
+
+    async fn post_github_ref(&self, ref_name: &str, sha: &str) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/git/refs", self.repo_url()))
+            .json(&json!({
+                "ref": ref_name,
+                "sha": sha
+            }))
+            .send()
+            .await?;
+
+        // GitHub returns 422 (Unprocessable Entity) when the provided commit SHA
+        // only exists locally (i.e. it has not been pushed to the remote).
+        if response.status() == StatusCode::UNPROCESSABLE_ENTITY {
+            // Try to capture the body for extra diagnostics.
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read response body>".to_string());
+            anyhow::bail!(
+                "failed to create ref {ref_name} with sha {sha}. \
+The commit {sha} likely hasn't been pushed to the remote repository yet. \
+Please push your local commits and run release-plz again.\nResponse body: {body}"
+            );
+        }
+
+        response
+            .successful_status()
+            .await
+            .with_context(|| format!("failed to create ref {ref_name} with sha {sha}"))?;
+        Ok(())
+    }
+
+    async fn post_gitlab_branch(&self, branch_name: &str, sha: &str) -> anyhow::Result<()> {
+        self.client
+            .post(format!("{}/repository/branches", self.repo_url()))
+            .json(&json!({
+                "branch": branch_name,
+                "ref": sha
+            }))
+            .send()
+            .await?
+            .successful_status()
+            .await
+            .with_context(|| format!("failed to create branch {branch_name} with sha {sha}"))?;
+        Ok(())
+    }
+
+    async fn post_gitea_branch(&self, branch_name: &str, sha: &str) -> anyhow::Result<()> {
+        self.client
+            .post(format!("{}/branches", self.repo_url()))
+            .json(&json!({
+                "new_branch_name": branch_name,
+                "old_ref_name": sha
+            }))
+            .send()
+            .await?
+            .successful_status()
+            .await
+            .with_context(|| format!("failed to create branch {branch_name} with sha {sha}"))?;
+        Ok(())
+    }
+
+    pub async fn patch_github_ref(&self, ref_name: &str, sha: &str) -> anyhow::Result<()> {
+        self.client
+            .patch(format!("{}/git/refs/{}", self.repo_url(), ref_name))
+            .json(&json!({
+                "sha": sha,
+                "force": true
+            }))
+            .send()
+            .await?
+            .successful_status()
+            .await
+            .with_context(|| format!("failed to update ref {ref_name} with sha {sha}"))?;
+        Ok(())
+    }
+
+    /// Delete a branch.
+    pub async fn delete_branch(&self, branch_name: &str) -> anyhow::Result<()> {
+        let url = match self.forge {
+            ForgeType::Github => format!("{}/git/refs/heads/{}", self.repo_url(), branch_name),
+            ForgeType::Gitlab => format!(
+                "{}/repository/branches/{}",
+                self.repo_url(),
+                urlencoding::encode(branch_name)
+            ),
+            ForgeType::Gitea => format!(
+                "{}/branches/{}",
+                self.repo_url(),
+                urlencoding::encode(branch_name)
+            ),
+        };
+        self.client
+            .delete(url)
+            .send()
+            .await?
+            .successful_status()
+            .await
+            .context("failed to delete branch")?;
+        Ok(())
+    }
+
+    /// Creates an annotated tag.
+    pub async fn create_tag(
+        &self,
+        tag_name: &str,
+        message: &str,
+        sha: &str,
+    ) -> Result<(), anyhow::Error> {
+        match self.forge {
+            ForgeType::Github => self.create_github_tag(tag_name, message, sha).await,
+            ForgeType::Gitlab => self.create_gitlab_tag(tag_name, message, sha).await,
+            ForgeType::Gitea => self.create_gitea_tag(tag_name, message, sha).await,
+        }
+    }
+
+    async fn create_github_tag(
+        &self,
+        tag_name: &str,
+        message: &str,
+        sha: &str,
+    ) -> Result<(), anyhow::Error> {
+        let tag_object_sha = self
+            .client
+            .post(format!("{}/git/tags", self.repo_url()))
+            .json(&json!({
+                "tag": tag_name,
+                "message": message,
+                "object": sha,
+                "type": "commit"
+            }))
+            .send()
+            .await?
+            .successful_status()
+            .await?
+            .json::<serde_json::Value>()
+            .await?
+            .get("sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .with_context(|| {
+                format!("failed to create git tag object for tag '{tag_name}' on '{sha}'")
+            })?;
+        self.post_github_ref(&format!("refs/tags/{tag_name}"), &tag_object_sha)
+            .await
+    }
+
+    async fn create_gitlab_tag(
+        &self,
+        tag_name: &str,
+        message: &str,
+        sha: &str,
+    ) -> Result<(), anyhow::Error> {
+        self.client
+            .post(format!("{}/repository/tags", self.repo_url()))
+            .json(&json!({
+                "tag_name": tag_name,
+                "ref": sha,
+                "message": message
+            }))
+            .send()
+            .await?
+            .successful_status()
+            .await
+            .with_context(|| format!("failed to create git tag '{tag_name}' with ref '{sha}'"))?;
+        Ok(())
+    }
+
+    async fn create_gitea_tag(
+        &self,
+        tag_name: &str,
+        message: &str,
+        sha: &str,
+    ) -> Result<(), anyhow::Error> {
+        self.client
+            .post(format!("{}/tags", self.repo_url()))
+            .json(&json!({
+                "tag_name": tag_name,
+                "target": sha,
+                "message": message
+            }))
+            .send()
+            .await?
+            .successful_status()
+            .await
+            .with_context(|| format!("failed to create git tag '{tag_name}' with ref '{sha}'"))?;
+        Ok(())
     }
 }
 
@@ -951,43 +1171,20 @@ pub struct GitHubCommitAuthor {
 
 /// Returns the list of contributors for the given commits,
 /// excluding the PR author and bots.
-pub fn contributors_from_commits(commits: &[PrCommit]) -> Vec<String> {
+pub fn contributors_from_commits(commits: &[PrCommit], forge: ForgeType) -> Vec<String> {
     let mut contributors = commits
         .iter()
         .skip(1) // skip pr author
         .flat_map(|commit| &commit.author)
-        .filter(|author| !author.login.ends_with("[bot]")) // ignore bots
+        .filter(|author| {
+            let is_gitea_actions_account = forge == ForgeType::Gitea && author.id == -2;
+            let is_bot = author.login.ends_with("[bot]") || is_gitea_actions_account;
+            !is_bot
+        })
         .map(|author| author.login.clone())
         .collect::<Vec<_>>();
     contributors.dedup();
     contributors
-}
-
-trait ResponseExt {
-    /// Better version of [`reqwest::Response::error_for_status`] that
-    /// also captures the response body in the error message. It will most
-    /// likely contain additional error details.
-    async fn successful_status(self) -> anyhow::Result<reqwest::Response>;
-}
-
-impl ResponseExt for reqwest::Response {
-    async fn successful_status(self) -> anyhow::Result<reqwest::Response> {
-        let Err(err) = self.error_for_status_ref() else {
-            return Ok(self);
-        };
-
-        let mut body = self
-            .text()
-            .await
-            .context("can't convert response body to text")?;
-
-        // If the response is JSON, try to pretty-print it.
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            body = format!("{json:#}");
-        }
-
-        Err(err).context(format!("Response body:\n{body}"))
-    }
 }
 
 #[cfg(test)]
@@ -999,19 +1196,29 @@ mod tests {
         let commits = vec![
             PrCommit {
                 author: Some(Author {
+                    id: 1,
                     login: "bob".to_string(),
                 }),
                 sha: "abc".to_string(),
             },
             PrCommit {
                 author: Some(Author {
+                    id: 2,
                     login: "marco".to_string(),
                 }),
                 sha: "abc".to_string(),
             },
             PrCommit {
                 author: Some(Author {
+                    id: 3,
                     login: "release[bot]".to_string(),
+                }),
+                sha: "abc".to_string(),
+            },
+            PrCommit {
+                author: Some(Author {
+                    id: -2,
+                    login: "gitea-actions".to_string(),
                 }),
                 sha: "abc".to_string(),
             },
@@ -1020,7 +1227,7 @@ mod tests {
                 sha: "abc".to_string(),
             },
         ];
-        let contributors = contributors_from_commits(&commits);
+        let contributors = contributors_from_commits(&commits, ForgeType::Gitea);
         assert_eq!(contributors, vec!["marco"]);
     }
 }

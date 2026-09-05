@@ -76,9 +76,10 @@ impl GiteaContext {
                 Err(e) => {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     retries += 1;
-                    if retries > max_retries {
-                        panic!("Failed to merge PR after {max_retries} retries. Error: {e:?}");
-                    }
+                    assert!(
+                        retries <= max_retries,
+                        "Failed to merge PR after {max_retries} retries. Error: {e:?}"
+                    );
                 }
             }
         }
@@ -119,11 +120,12 @@ impl GiteaContext {
     pub async fn get_file_content(&self, branch: &str, file_path: &str) -> String {
         use base64::Engine as _;
         let request_path = format!("{}/contents/{}", self.repo_url(), file_path);
+        let mut url = reqwest::Url::parse(&request_path).unwrap();
+        url.query_pairs_mut().append_pair("ref", branch);
         let response = self
             .client
-            .get(&request_path)
+            .get(url)
             .basic_auth(&self.user.username, Some(&self.user.password))
-            .query(&[("ref", branch)])
             .send()
             .await
             .unwrap()

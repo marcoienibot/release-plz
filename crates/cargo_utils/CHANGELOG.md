@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.80](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.79...cargo_utils-v0.1.80) - 2026-07-13
+
+### Fixed
+
+- fix clippy lint of rust 1.97 ([#2932](https://github.com/release-plz/release-plz/pull/2932))
+
+## [0.1.79](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.78...cargo_utils-v0.1.79) - 2026-06-09
+
+### Other
+
+- force cargo quiet to false ([#2889](https://github.com/release-plz/release-plz/pull/2889))
+
+## [0.1.78](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.77...cargo_utils-v0.1.78) - 2026-02-16
+
+### Other
+
+- use cargo info to understand if package was published ([#2645](https://github.com/release-plz/release-plz/pull/2645))
+
+## [0.1.77](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.76...cargo_utils-v0.1.77) - 2026-02-05
+
+### Fixed
+
+- read cargo registry token from env var correctly ([#2647](https://github.com/release-plz/release-plz/pull/2647))
+
+## [0.1.76](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.75...cargo_utils-v0.1.76) - 2026-01-17
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.1.75](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.74...cargo_utils-v0.1.75) - 2025-11-24
+
+### Other
+
+- address code quality issues ([#2498](https://github.com/release-plz/release-plz/pull/2498))
+
+## [0.1.74](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.73...cargo_utils-v0.1.74) - 2025-10-10
+
+### Other
+
+- cargo update and fix clippy lints ([#2450](https://github.com/release-plz/release-plz/pull/2450))
+
+## [0.1.73](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.72...cargo_utils-v0.1.73) - 2025-09-13
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.1.72](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.71...cargo_utils-v0.1.72) - 2025-08-31
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.1.71](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.70...cargo_utils-v0.1.71) - 2025-08-13
+
+### Other
+
+- update dependencies and fix lints ([#2336](https://github.com/release-plz/release-plz/pull/2336))
+
+## [0.1.70](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.69...cargo_utils-v0.1.70) - 2025-07-19
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.1.69](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.68...cargo_utils-v0.1.69) - 2025-07-09
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.1.68](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.67...cargo_utils-v0.1.68) - 2025-06-19
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.1.67](https://github.com/release-plz/release-plz/compare/cargo_utils-v0.1.66...cargo_utils-v0.1.67) - 2025-05-08
 
 ### Fixed

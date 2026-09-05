@@ -78,7 +78,9 @@ impl Repo {
         let changes = self.changes_except_typechanges()?;
         anyhow::ensure!(
             changes.is_empty(),
-            "the working directory of this project has uncommitted changes. If these files are both committed and in .gitignore, either delete them or remove them from .gitignore. Otherwise, please commit or stash these changes:\n{changes:?}"
+            "the working directory of this project has uncommitted changes. If these files are both committed and in .gitignore, either delete them or remove them from .gitignore.\n\
+             If the list includes submodules, run `git ls-files -ci --exclude-standard` in the submodule to check if files in the submodule are both committed and in .gitignore.\n\
+             Otherwise, please commit or stash these changes:\n{changes:?}"
         );
         Ok(())
     }
@@ -96,6 +98,14 @@ impl Repo {
     pub fn add_all_and_commit(&self, message: &str) -> anyhow::Result<()> {
         self.git(&["add", "."])?;
         self.git(&["commit", "-m", message])?;
+        Ok(())
+    }
+
+    pub fn disable_gpg_signing(&self) -> anyhow::Result<()> {
+        self.git(&["config", "commit.gpgsign", "false"])
+            .context("failed to disable commit gpg signing")?;
+        self.git(&["config", "tag.gpgsign", "false"])
+            .context("failed to disable tag gpg signing")?;
         Ok(())
     }
 
@@ -147,7 +157,8 @@ impl Repo {
     }
 
     pub fn fetch(&self, obj: &str) -> anyhow::Result<()> {
-        self.git(&["fetch", &self.original_remote, obj])?;
+        self.git(&["fetch", &self.original_remote, obj])
+            .with_context(|| format!("failed to fetch {obj}"))?;
         Ok(())
     }
 
@@ -157,7 +168,8 @@ impl Repo {
         // In other words, it will only push if no one else has pushed changes to the remote
         // branch since you last pulled. If someone else has pushed changes, the command will fail,
         // preventing you from accidentally overwriting someone else's work.
-        self.git(&["push", &self.original_remote, obj, "--force-with-lease"])?;
+        self.git(&["push", &self.original_remote, obj, "--force-with-lease"])
+            .with_context(|| format!("failed to force-push {obj}"))?;
         Ok(())
     }
 
@@ -171,34 +183,6 @@ impl Repo {
     /// I.e. when the [`Repo`] was created.
     pub fn original_branch(&self) -> &str {
         &self.original_branch
-    }
-
-    #[instrument(skip(self))]
-    fn current_commit(&self) -> anyhow::Result<String> {
-        self.nth_commit(1)
-    }
-
-    #[instrument(skip(self))]
-    fn previous_commit(&self) -> anyhow::Result<String> {
-        self.nth_commit(2)
-    }
-
-    #[instrument(
-        skip(self)
-        fields(
-            nth_commit = tracing::field::Empty,
-        )
-    )]
-    fn nth_commit(&self, nth: usize) -> anyhow::Result<String> {
-        let nth = nth.to_string();
-        let commit_list = self.git(&["--format=%H", "-n", &nth])?;
-        let last_commit = commit_list
-            .lines()
-            .last()
-            .context("repository has no commits")?;
-        Span::current().record("nth_commit", last_commit);
-
-        Ok(last_commit.to_string())
     }
 
     /// Run a git command in the repository git directory
@@ -315,9 +299,14 @@ impl Repo {
             .context("can't determine current commit hash")
     }
 
-    /// Create a git tag
+    /// Create a git tag (annotated)
     pub fn tag(&self, name: &str, message: &str) -> anyhow::Result<String> {
         self.git(&["tag", "-m", message, name])
+    }
+
+    /// Create a lightweight git tag (no message, just a reference to a commit)
+    pub fn tag_lightweight(&self, name: &str) -> anyhow::Result<String> {
+        self.git(&["tag", name])
     }
 
     /// Get the commit hash of the given tag

@@ -77,15 +77,16 @@ async fn release_plz_releases_a_new_project() {
 
     let dest_dir = Utf8TempDir::new().unwrap();
 
-    let packages = || context.download_package(dest_dir.path());
+    let packages = async || context.download_package(dest_dir.path()).await;
     // Before running release-plz, no packages should be present.
-    assert!(packages().is_empty());
+    assert!(packages().await.is_empty());
 
     context.run_release().success();
 
-    assert_eq!(packages().len(), 1);
+    assert_eq!(packages().await.len(), 1);
 }
 
+// TODO: switch `### Contributors` to `=== Contributors` and make test pass
 #[tokio::test]
 #[cfg_attr(not(feature = "docker-tests"), ignore)]
 async fn release_plz_adds_custom_changelog() {
@@ -119,9 +120,47 @@ async fn release_plz_adds_custom_changelog() {
 
     let outcome = context.run_release_pr().success();
 
+    let username = context.gitea.user.username();
+    let package = &context.gitea.repo;
     let opened_prs = context.opened_release_prs().await;
     assert_eq!(opened_prs.len(), 1);
     let open_pr = &opened_prs[0];
+    let expected_pr_body = format!(
+        r"
+## 🤖 New release
+
+* `{package}`: 0.1.0
+
+<details><summary><i><b>Changelog</b></i></summary><p>
+
+<blockquote>
+
+
+owner: {username}, repo: {package}, link: https://localhost:3000/{username}/{package}
+
+== {package} - [0.1.0](https://localhost:3000/{username}/{package}/releases/tag/v0.1.0)
+
+
+=== Other
+- add config file by {username} (gitea: {username})
+- cargo init by {username} (gitea: {username})
+- Initial commit by {username} (gitea: {username})
+
+### Contributors
+
+* @{username}
+</blockquote>
+
+
+</p></details>
+
+---
+This PR was generated with [release-plz](https://github.com/release-plz/release-plz/).",
+    );
+    assert_eq!(
+        open_pr.body.as_ref().unwrap().trim(),
+        expected_pr_body.trim()
+    );
 
     let expected_stdout = serde_json::json!({
         "prs": [{
@@ -144,10 +183,12 @@ async fn release_plz_adds_custom_changelog() {
     let expected_changelog = "Changelog\n\n";
     let username = context.gitea.user.username();
     let repo = context.gitea.repo;
-    let remote_string =
-        format!("owner: {username}, repo: {repo}, link: https://localhost/{username}/{repo}\n\n",);
-    let package_string =
-        format!("== {repo} - [0.1.0](https://localhost/{username}/{repo}/releases/tag/v0.1.0)\n\n");
+    let remote_string = format!(
+        "owner: {username}, repo: {repo}, link: https://localhost:3000/{username}/{repo}\n\n"
+    );
+    let package_string = format!(
+        "== {repo} - [0.1.0](https://localhost:3000/{username}/{repo}/releases/tag/v0.1.0)\n\n"
+    );
     let commits = ["add config file", "cargo init", "Initial commit"];
     #[expect(clippy::format_collect)]
     let commits_str = commits
@@ -174,7 +215,7 @@ async fn can_generate_single_changelog_for_multiple_packages_in_pr() {
     let context = TestContext::new_workspace_with_packages(&[
         TestPackage::new("one")
             .with_type(PackageType::Bin)
-            .with_path_dependencies(vec![format!("../two")]),
+            .with_path_dependencies(vec!["../two".to_string()]),
         TestPackage::new("two").with_type(PackageType::Lib),
     ])
     .await;
@@ -211,7 +252,7 @@ async fn can_generate_single_changelog_for_multiple_packages_in_pr() {
         .await;
     // Since `one` depends from `two`, the new changelog entry of `one` comes before the entry of
     // `two`.
-    expect_test::expect![[r#"
+    expect_test::expect![[r"
         # Changelog
 
         All notable changes to this project will be documented in this file.
@@ -230,7 +271,7 @@ async fn can_generate_single_changelog_for_multiple_packages_in_pr() {
 
         ### Other
         - cargo init
-    "#]]
+    "]]
     .assert_eq(&changelog);
 }
 
@@ -263,7 +304,7 @@ async fn can_generate_single_changelog_for_multiple_packages_locally() {
 
     let changelog = fs_err::read_to_string(context.repo.directory().join("CHANGELOG.md")).unwrap();
 
-    expect_test::expect![[r#"
+    expect_test::expect![[r"
         # Changelog
 
         All notable changes to this project will be documented in this file.
@@ -282,7 +323,7 @@ async fn can_generate_single_changelog_for_multiple_packages_locally() {
 
         ### Other
         - cargo init
-    "#]]
+    "]]
     .assert_eq(&changelog);
 }
 
@@ -309,7 +350,7 @@ async fn raw_message_contains_entire_commit_message() {
 
     let changelog = fs_err::read_to_string(context.repo.directory().join("CHANGELOG.md")).unwrap();
 
-    expect_test::expect![[r#"
+    expect_test::expect![[r"
         # Changelog
 
         All notable changes to this project will be documented in this file.
@@ -332,7 +373,7 @@ async fn raw_message_contains_entire_commit_message() {
 
         raw_message: Initial commit
         message: Initial commit
-    "#]]
+    "]]
     .assert_eq(&changelog);
 }
 
@@ -363,7 +404,7 @@ async fn pr_link_is_expanded() {
     assert_eq!(
         changelog.trim(),
         format!(
-            r#"
+            r"
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -373,17 +414,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0](https://localhost/{username}/{package}/releases/tag/v0.1.0) - {today}
+## [0.1.0](https://localhost:3000/{username}/{package}/releases/tag/v0.1.0) - {today}
 
 ### Added
 
-- new file ([#1](https://localhost/{username}/{package}/pulls/1))
+- new file ([#1](https://localhost:3000/{username}/{package}/pulls/1))
 
 ### Other
 
-- non-conventional commit ([#2](https://localhost/{username}/{package}/pulls/2))
+- non-conventional commit ([#2](https://localhost:3000/{username}/{package}/pulls/2))
 - cargo init
-- Initial commit"#,
+- Initial commit",
         )
         .trim()
     );

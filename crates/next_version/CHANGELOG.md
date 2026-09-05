@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/release-plz/release-plz/compare/next_version-v0.3.1...next_version-v0.3.2) - 2026-05-10
+
+### Added
+
+- *(set-version)* add no-increment regex ([#2830](https://github.com/release-plz/release-plz/pull/2830))
+
+### Other
+
+- *(set-version)* improve custom regex docs ([#2829](https://github.com/release-plz/release-plz/pull/2829))
+
+## [0.3.1](https://github.com/release-plz/release-plz/compare/next_version-v0.3.0...next_version-v0.3.1) - 2026-02-16
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.3.0](https://github.com/release-plz/release-plz/compare/next_version-v0.2.26...next_version-v0.3.0) - 2026-01-17
+
+### Changed
+
+- \[**breaking**\] ([#2574](https://github.com/release-plz/release-plz/pull/2574)) edits
+  how `with_custom_major_increment_regex` and `with_custom_major_increment_regex` behave:
+
+  - If the commit message is a conventional commit, the regex is matched against the commit type
+    (the part before the `:` in a commit message).
+  - If the commit message is not a conventional commit, the regex is matched against the entire commit message.
+
+
+## [0.2.26](https://github.com/release-plz/release-plz/compare/next_version-v0.2.25...next_version-v0.2.26) - 2025-11-24
+
+### Other
+
+- address code quality issues ([#2498](https://github.com/release-plz/release-plz/pull/2498))
+
+## [0.2.25](https://github.com/release-plz/release-plz/compare/next_version-v0.2.24...next_version-v0.2.25) - 2025-09-13
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.2.24](https://github.com/release-plz/release-plz/compare/next_version-v0.2.23...next_version-v0.2.24) - 2025-03-17
 
 ### Other

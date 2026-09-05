@@ -14,9 +14,27 @@ const CRATES_IO_REGISTRY: &str = "crates-io";
 /// - [`Result::Err`] if the registry name is invalid.
 /// - [`Result::Ok`] with [`Option::None`] if the environment variable is not set.
 pub fn registry_index_url_from_env(registry: &str) -> anyhow::Result<Option<String>> {
-    let env_var = get_registry_env_var_name(registry)
-        .with_context(|| format!("registry name {registry} is invalid."))?;
-    Ok(std::env::var(env_var).ok())
+    let env_var_name = cargo_registries_index_env_var_name(registry)?;
+    Ok(std::env::var(env_var_name).ok())
+}
+
+pub fn cargo_registries_token_env_var_name(registry: &str) -> anyhow::Result<String> {
+    let name = if registry == "crates-io" {
+        "CARGO_REGISTRY_TOKEN".to_string()
+    } else {
+        format!(
+            "CARGO_REGISTRIES_{}_TOKEN",
+            registry_env_var_name(registry)?
+        )
+    };
+    Ok(name)
+}
+
+fn cargo_registries_index_env_var_name(registry: &str) -> anyhow::Result<String> {
+    Ok(format!(
+        "CARGO_REGISTRIES_{}_INDEX",
+        registry_env_var_name(registry)?
+    ))
 }
 
 /// Sanitizes the registry name to construct a valid environment variable name.
@@ -24,7 +42,7 @@ pub fn registry_index_url_from_env(registry: &str) -> anyhow::Result<Option<Stri
 /// - Alphanumeric characters and underscores (`_`) are preserved.
 /// - Hyphens (`-`) are converted to underscores (`_`).
 /// - Any other non-alphanumeric character is invalid and will cause an error.
-fn get_registry_env_var_name(registry: &str) -> anyhow::Result<String> {
+fn registry_env_var_name(registry: &str) -> anyhow::Result<String> {
     let mut sanitized_name = String::with_capacity(registry.len());
 
     for ch in registry.chars() {
@@ -33,12 +51,11 @@ fn get_registry_env_var_name(registry: &str) -> anyhow::Result<String> {
         } else if ch == '-' {
             sanitized_name.push('_');
         } else {
-            anyhow::bail!("Invalid character in registry name: '{ch}'");
+            anyhow::bail!("Invalid character in registry name `{registry}`: `{ch}`");
         }
     }
 
-    let sanitized_name = sanitized_name.to_uppercase();
-    Ok(format!("CARGO_REGISTRIES_{sanitized_name}_INDEX"))
+    Ok(sanitized_name.to_uppercase())
 }
 
 /// Find the URL of a registry
@@ -67,15 +84,15 @@ pub fn registry_url(manifest_path: &Path, registry: Option<&str>) -> anyhow::Res
     let mut registries: HashMap<String, Source> = HashMap::new();
 
     // set top-level env var override if it exists.
-    if let Some(registry_name) = registry {
-        if let Some(env_var_override) = registry_index_url_from_env(registry_name)? {
-            registries
-                .entry(registry_name.to_string())
-                .or_insert(Source {
-                    registry: Some(env_var_override),
-                    replace_with: None,
-                });
-        }
+    if let Some(registry_name) = registry
+        && let Some(env_var_override) = registry_index_url_from_env(registry_name)?
+    {
+        registries
+            .entry(registry_name.to_string())
+            .or_insert(Source {
+                registry: Some(env_var_override),
+                replace_with: None,
+            });
     }
 
     // ref: https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure
@@ -118,7 +135,7 @@ pub fn registry_url(manifest_path: &Path, registry: Option<&str>) -> anyhow::Res
         }
         Some(r) => registries
             .remove(r)
-            .with_context(|| anyhow::anyhow!("The registry '{}' could not be found", r))?,
+            .with_context(|| anyhow::anyhow!("The registry '{r}' could not be found"))?,
     };
 
     // search this linked list and find the tail
@@ -126,7 +143,7 @@ pub fn registry_url(manifest_path: &Path, registry: Option<&str>) -> anyhow::Res
         let is_crates_io = replace_with == CRATES_IO_INDEX;
         source = registries
             .remove(replace_with)
-            .with_context(|| anyhow::anyhow!("The source '{}' could not be found", replace_with))?;
+            .with_context(|| anyhow::anyhow!("The source '{replace_with}' could not be found"))?;
         if is_crates_io {
             source
                 .registry
@@ -179,58 +196,87 @@ mod tests {
     #[test]
     fn test_get_registry_env_var_name() {
         assert_eq!(
-            get_registry_env_var_name("my-registry").unwrap(),
+            cargo_registries_index_env_var_name("my-registry").unwrap(),
             "CARGO_REGISTRIES_MY_REGISTRY_INDEX"
         );
         assert_eq!(
-            get_registry_env_var_name("my_registry").unwrap(),
+            cargo_registries_index_env_var_name("my_registry").unwrap(),
             "CARGO_REGISTRIES_MY_REGISTRY_INDEX"
         );
         assert_eq!(
-            get_registry_env_var_name("registry1").unwrap(),
+            cargo_registries_index_env_var_name("registry1").unwrap(),
             "CARGO_REGISTRIES_REGISTRY1_INDEX"
         );
         assert_eq!(
-            get_registry_env_var_name("UPPERCASE").unwrap(),
+            cargo_registries_index_env_var_name("UPPERCASE").unwrap(),
             "CARGO_REGISTRIES_UPPERCASE_INDEX"
         );
         assert_eq!(
-            get_registry_env_var_name("-leading-dash").unwrap(),
+            cargo_registries_index_env_var_name("-leading-dash").unwrap(),
             "CARGO_REGISTRIES__LEADING_DASH_INDEX"
         );
         assert_eq!(
-            get_registry_env_var_name("trailing-dash-").unwrap(),
+            cargo_registries_index_env_var_name("trailing-dash-").unwrap(),
             "CARGO_REGISTRIES_TRAILING_DASH__INDEX"
         );
         assert_eq!(
-            get_registry_env_var_name("multiple---dashes").unwrap(),
+            cargo_registries_index_env_var_name("multiple---dashes").unwrap(),
             "CARGO_REGISTRIES_MULTIPLE___DASHES_INDEX"
         );
         assert_eq!(
-            get_registry_env_var_name("mixed-dashes-and_underscores").unwrap(),
+            cargo_registries_index_env_var_name("mixed-dashes-and_underscores").unwrap(),
             "CARGO_REGISTRIES_MIXED_DASHES_AND_UNDERSCORES_INDEX"
         );
         assert_eq!(
-            get_registry_env_var_name("---").unwrap(),
+            cargo_registries_index_env_var_name("---").unwrap(),
             "CARGO_REGISTRIES_____INDEX"
         );
 
         // Invalid characters should fail
 
-        expect_test::expect!["Invalid character in registry name: '!'"]
+        expect_test::expect!["Invalid character in registry name `with-special-chars!`: `!`"]
             .assert_eq(&registry_env_var_name_error("with-special-chars!"));
 
-        expect_test::expect!["Invalid character in registry name: '+'"]
+        expect_test::expect!["Invalid character in registry name `invalid+char`: `+`"]
             .assert_eq(&registry_env_var_name_error("invalid+char"));
 
-        expect_test::expect!["Invalid character in registry name: '@'"]
+        expect_test::expect!["Invalid character in registry name `has@symbol`: `@`"]
             .assert_eq(&registry_env_var_name_error("has@symbol"));
 
-        expect_test::expect!["Invalid character in registry name: ' '"]
+        expect_test::expect!["Invalid character in registry name `space not allowed`: ` `"]
             .assert_eq(&registry_env_var_name_error("space not allowed"));
     }
 
+    #[test]
+    fn cargo_info_token_env_var_name_for_crates_io_works() {
+        assert_eq!(
+            cargo_registries_token_env_var_name("crates-io").unwrap(),
+            "CARGO_REGISTRY_TOKEN"
+        );
+    }
+
+    #[test]
+    fn cargo_info_token_env_var_name_normalizes_dashes() {
+        assert_eq!(
+            cargo_registries_token_env_var_name("my-registry").unwrap(),
+            "CARGO_REGISTRIES_MY_REGISTRY_TOKEN"
+        );
+    }
+
+    #[test]
+    fn cargo_info_token_env_var_name_invalid_registry_fails() {
+        let error = cargo_registries_token_env_var_name("invalid+registry")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "Invalid character in registry name `invalid+registry`: `+`"
+        );
+    }
+
     fn registry_env_var_name_error(registry: &str) -> String {
-        get_registry_env_var_name(registry).unwrap_err().to_string()
+        cargo_registries_index_env_var_name(registry)
+            .unwrap_err()
+            .to_string()
     }
 }

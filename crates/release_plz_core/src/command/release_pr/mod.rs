@@ -7,6 +7,7 @@ use anyhow::Context;
 use serde::Serialize;
 use tracing::{debug, info, instrument};
 use url::Url;
+pub(crate) mod git;
 
 use crate::git::forge::{
     ForgeType, GitClient, GitPr, PrEdit, contributors_from_commits, validate_labels,
@@ -132,6 +133,8 @@ pub async fn release_pr(input: &ReleasePrRequest) -> anyhow::Result<Option<Relea
     let tmp_project_root =
         new_project_root(&original_project_root, tmp_project_root_parent.path())?;
 
+    // NOTE: I was planning on using worktrees here too, but a bunch of the tests started failing
+    // so I went back to using full copies.
     let local_manifest = tmp_project_manifest_dir.join(CARGO_TOML);
     let new_update_request = input
         .update_request
@@ -145,15 +148,17 @@ pub async fn release_pr(input: &ReleasePrRequest) -> anyhow::Result<Option<Relea
         .update_request
         .git_client()?
         .context("can't find git client")?;
+
     if !packages_to_update.updates().is_empty() {
-        let repo = Repo::new(tmp_project_root)?;
-        let there_are_commits_to_push = repo.is_clean().is_err();
+        let unreleased_package_worktree_repo =
+            Repo::new(&tmp_project_root).context("create new repo")?;
+        let there_are_commits_to_push = unreleased_package_worktree_repo.is_clean().is_err();
         if there_are_commits_to_push {
             let pr = open_or_update_release_pr(
                 &local_manifest,
                 &packages_to_update,
                 &git_client,
-                &repo,
+                &unreleased_package_worktree_repo,
                 ReleasePrOptions {
                     draft: input.draft,
                     pr_name: input.pr_name_template.clone(),
@@ -241,7 +246,7 @@ async fn open_or_update_release_pr(
             .updates()
             .iter()
             .map(|(package, update)| PrPackageRelease {
-                package_name: package.name.clone(),
+                package_name: package.name.to_string(),
                 version: update.version.clone(),
             })
             .collect(),
@@ -261,7 +266,7 @@ async fn handle_opened_pr(
         .pr_commits(opened_pr.number)
         .await
         .context("cannot get commits of release-plz pr")?;
-    let pr_contributors = contributors_from_commits(&pr_commits);
+    let pr_contributors = contributors_from_commits(&pr_commits, git_client.forge);
     Ok(if pr_contributors.is_empty() {
         // There are no contributors, so we can force-push
         // in this PR, because we don't care about the git history.
@@ -305,7 +310,7 @@ async fn handle_opened_pr(
 
 async fn create_pr(git_client: &GitClient, repo: &Repo, pr: &Pr) -> anyhow::Result<ReleasePr> {
     repo.checkout_new_branch(&pr.branch)?;
-    if matches!(git_client.forge, ForgeType::Github) {
+    if git_client.forge == ForgeType::Github {
         github_create_release_branch(git_client, repo, &pr.branch, &pr.title).await?;
     } else {
         create_release_branch(repo, &pr.branch, &pr.title)?;
@@ -330,7 +335,7 @@ async fn update_pr(
             repository.original_branch()
         )
     })?;
-    if matches!(git_client.forge, ForgeType::Github) {
+    if git_client.forge == ForgeType::Github {
         github_force_push(git_client, opened_pr, repository).await?;
     } else {
         force_push(opened_pr, repository)?;
@@ -423,11 +428,8 @@ async fn github_force_push(
     pr: &GitPr,
     repository: &Repo,
 ) -> anyhow::Result<()> {
-    // Create a temporary branch.
-    let tmp_release_branch = {
-        let name = format!("{}-tmp-{}", pr.branch(), rand::random::<u32>());
-        TmpBranch::checkout_new(repository, name)
-    }?;
+    let tmp_release_branch = format!("{}-tmp-{}", pr.branch(), rand::random::<u32>());
+    repository.checkout_new_branch(&tmp_release_branch)?;
 
     // Push the "Verified" commit in the temporary branch using
     // the GitHub API.
@@ -437,45 +439,35 @@ async fn github_force_push(
     // - If we revert the last commit of the release PR branch, GitHub will close the release PR
     //   because the branch is the same as the default branch. So we can't revert the latest release-plz commit and push the new one.
     // To learn more, see https://github.com/release-plz/release-plz/issues/1487
-    github_create_release_branch(client, repository, &tmp_release_branch.name, &pr.title).await?;
+    let sha =
+        github_create_release_branch(client, repository, &tmp_release_branch, &pr.title).await?;
 
-    repository.fetch(&tmp_release_branch.name)?;
+    let force_push_result =
+        execute_github_force_push(client, pr, repository, &tmp_release_branch, &sha).await;
+    // Delete the temporary branch if it was created. Even if the push failed.
+    if let Err(e) = client.delete_branch(&tmp_release_branch).await {
+        tracing::error!("cannot delete branch {tmp_release_branch}: {e:?}");
+    }
+
+    force_push_result
+}
+
+async fn execute_github_force_push(
+    client: &GitClient,
+    pr: &GitPr,
+    repository: &Repo,
+    tmp_release_branch: &str,
+    sha: &str,
+) -> anyhow::Result<()> {
+    repository.fetch(tmp_release_branch)?;
 
     // Rewrite the PR branch so that it's the same as the temporary branch.
-    repository.force_push(&format!(
-        "{}/{}:{}",
-        repository.original_remote(),
-        tmp_release_branch.name,
-        pr.branch()
-    ))?;
+    client
+        .patch_github_ref(&format!("heads/{}", pr.branch()), sha)
+        .await
+        .context("failed to force push PR branch")?;
 
-    // The temporary branch is deleted in remote when it goes out of scope.
     Ok(())
-}
-
-/// Temporary branch.
-/// It deletes the branch in remote when it goes out of scope.
-/// In this way, we can ensure that the branch is deleted even if the program panics.
-struct TmpBranch<'a> {
-    name: String,
-    repository: &'a Repo,
-}
-
-impl<'a> TmpBranch<'a> {
-    fn checkout_new(repository: &'a Repo, name: impl Into<String>) -> anyhow::Result<Self> {
-        let name = name.into();
-        repository.checkout_new_branch(&name)?;
-        let branch = Self { name, repository };
-        Ok(branch)
-    }
-}
-
-impl Drop for TmpBranch<'_> {
-    fn drop(&mut self) {
-        if let Err(e) = self.repository.delete_branch_in_remote(&self.name) {
-            tracing::error!("cannot delete branch {}: {:?}", self.name, e);
-        }
-    }
 }
 
 fn create_release_branch(
@@ -493,9 +485,16 @@ async fn github_create_release_branch(
     repository: &Repo,
     release_branch: &str,
     commit_message: &str,
-) -> anyhow::Result<()> {
-    repository.push(release_branch)?;
-    github_graphql::commit_changes(client, repository, commit_message, release_branch).await
+) -> anyhow::Result<String> {
+    let sha = repository.current_commit_hash()?;
+    client.create_branch(release_branch, &sha).await?;
+    let sha = github_graphql::commit_changes(client, repository, commit_message, release_branch)
+        .await
+        .with_context(|| {
+            format!("failed to create commit via graphql on branch `{release_branch}`")
+        })?;
+    tracing::debug!("committed changes on branch `{release_branch}` via graphql");
+    Ok(sha)
 }
 
 fn add_changes_and_commit(repository: &Repo, commit_message: &str) -> anyhow::Result<()> {

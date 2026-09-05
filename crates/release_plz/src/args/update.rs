@@ -3,21 +3,20 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use cargo_metadata::camino::Utf8Path;
 use chrono::NaiveDate;
-use clap::{
-    ValueEnum,
-    builder::{NonEmptyStringValueParser, PathBufValueParser},
-};
+use clap::builder::{NonEmptyStringValueParser, PathBufValueParser};
 use git_cliff_core::config::Config as GitCliffConfig;
 use release_plz_core::{
-    ChangelogRequest, GitForge, GitHub, GitLab, Gitea, RepoUrl, fs_utils::to_utf8_path,
-    update_request::UpdateRequest,
+    ChangelogRequest, ForgeType, RepoUrl, fs_utils::to_utf8_path, update_request::UpdateRequest,
 };
 use secrecy::SecretString;
 
-use crate::config::Config;
+use crate::{changelog_config, config::Config};
 
 use super::{
-    config_command::ConfigCommand, manifest_command::ManifestCommand, repo_command::RepoCommand,
+    config_path::ConfigPath,
+    git_forge::{GitForgeKind, git_forge},
+    manifest_command::ManifestCommand,
+    repo_command::RepoCommand,
 };
 
 /// Update your project locally, without opening a PR.
@@ -30,6 +29,7 @@ pub struct Update {
     /// Both Cargo workspaces and single packages are supported.
     #[arg(long, value_parser = PathBufValueParser::new(), alias = "project-manifest")]
     manifest_path: Option<PathBuf>,
+
     /// Path to the Cargo.toml contained in the released version of the project you want to update.
     /// If not provided, the packages of your project will be compared with the
     /// ones published in the cargo registry.
@@ -39,6 +39,7 @@ pub struct Update {
     /// The git history of this project should be behind the one of the project you want to update.
     #[arg(long, value_parser = PathBufValueParser::new(), alias = "registry-project-manifest")]
     registry_manifest_path: Option<PathBuf>,
+
     /// Package to update. Use it when you want to update a single package rather than all the
     /// packages contained in the workspace.
     #[arg(
@@ -47,9 +48,11 @@ pub struct Update {
         value_parser = NonEmptyStringValueParser::new()
     )]
     package: Option<String>,
+
     /// Don't create/update changelog.
     #[arg(long, conflicts_with("release_date"))]
     no_changelog: bool,
+
     /// Date of the release. Format: %Y-%m-%d. It defaults to current Utc date.
     #[arg(
         long,
@@ -57,6 +60,7 @@ pub struct Update {
         value_parser = NonEmptyStringValueParser::new()
     )]
     release_date: Option<String>,
+
     /// Registry where the packages are stored.
     /// The registry name needs to be present in the Cargo config.
     /// If unspecified, the `publish` field of the package manifest is used.
@@ -67,10 +71,12 @@ pub struct Update {
         value_parser = NonEmptyStringValueParser::new()
     )]
     registry: Option<String>,
+
     /// Update all the dependencies in the Cargo.lock file by running `cargo update`.
     /// If this flag is not specified, only update the workspace packages by running `cargo update --workspace`.
     #[arg(short, long)]
     update_deps: bool,
+
     /// Path to the git-cliff configuration file.
     /// If not provided, `dirs::config_dir()/git-cliff/cliff.toml` is used if present.
     #[arg(
@@ -81,44 +87,39 @@ pub struct Update {
         value_parser = PathBufValueParser::new()
     )]
     changelog_config: Option<PathBuf>,
+
     /// Allow dirty working directories to be updated.
     /// The uncommitted changes will be part of the update.
     #[arg(long)]
     allow_dirty: bool,
+
     /// GitHub/Gitea repository url where your project is hosted.
     /// It is used to generate the changelog release link.
     /// It defaults to the url of the default remote.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     repo_url: Option<String>,
+
     /// Path to the release-plz config file.
-    /// Default: `./release-plz.toml`.
-    /// If no config file is found, the default configuration is used.
-    #[arg(
-        long,
-        value_name = "PATH",
-        value_parser = PathBufValueParser::new()
-    )]
-    config: Option<PathBuf>,
+    #[command(flatten)]
+    pub config: ConfigPath,
+
     /// Git token used to create the pull request.
     #[arg(long, value_parser = NonEmptyStringValueParser::new(), visible_alias = "github-token", env, hide_env_values=true)]
     pub git_token: Option<String>,
+
     /// Kind of git host where your project is hosted.
-    #[arg(long, visible_alias = "backend", value_enum, default_value_t = GitForgeKind::Github)]
-    forge: GitForgeKind,
+    /// If not specified, release-plz infers it from the repository host. Specify it explicitly for
+    /// GitHub Enterprise Server, whose host can't be auto-detected.
+    #[arg(long, visible_alias = "backend", value_enum)]
+    forge: Option<GitForgeKind>,
+    /// Maximum number of commits to analyze when the package hasn't been published yet.
+    /// Default: 1000.
+    #[arg(long)]
+    max_analyze_commits: Option<u32>,
     #[arg(long)]
     check_only: bool,
     #[arg(long)]
     exit_status: bool,
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GitForgeKind {
-    #[value(name = "github")]
-    Github,
-    #[value(name = "gitea")]
-    Gitea,
-    #[value(name = "gitlab")]
-    Gitlab,
 }
 
 impl RepoCommand for Update {
@@ -133,29 +134,24 @@ impl ManifestCommand for Update {
     }
 }
 
-impl ConfigCommand for Update {
-    fn config_path(&self) -> Option<&Path> {
-        self.config.as_deref()
-    }
-}
-
 impl Update {
-    pub fn git_forge(&self, repo: RepoUrl) -> anyhow::Result<Option<GitForge>> {
-        let Some(token) = self.git_token.clone() else {
-            return Ok(None);
-        };
-        let token = SecretString::from(token);
-        Ok(Some(match self.forge {
-            GitForgeKind::Github => {
-                anyhow::ensure!(
-                    repo.is_on_github(),
-                    "Can't create PR: the repository is not hosted in GitHub. Please select a different forge."
-                );
-                GitForge::Github(GitHub::new(repo.owner, repo.name, token))
-            }
-            GitForgeKind::Gitea => GitForge::Gitea(Gitea::new(repo, token)?),
-            GitForgeKind::Gitlab => GitForge::Gitlab(GitLab::new(repo, token)?),
-        }))
+    /// Forge type used to render changelog PR links.
+    ///
+    /// Prefers the explicit `--forge` flag. When it's not provided, it falls
+    /// back to host-based inference so that Gitea/GitLab users keep getting
+    /// `/pulls` links without passing `--forge` (matching the behavior before
+    /// explicit forge selection existed). GitHub Enterprise Server hosts can't
+    /// be detected from the host, so they need an explicit `--forge github`.
+    fn changelog_forge_type(&self, repo_url: Option<&RepoUrl>) -> ForgeType {
+        match self.forge {
+            Some(kind) => kind.into(),
+            // `is_on_github()` matches `github.com`-style hosts. Any other host
+            // is assumed to use the `/pulls` path (Gitea and GitLab both do).
+            None => match repo_url {
+                Some(url) if !url.is_on_github() => ForgeType::Gitea,
+                _ => ForgeType::Github,
+            },
+        }
     }
 
     fn dependencies_update(&self, config: &Config) -> bool {
@@ -164,6 +160,11 @@ impl Update {
 
     fn allow_dirty(&self, config: &Config) -> bool {
         self.allow_dirty || config.workspace.allow_dirty == Some(true)
+    }
+
+    fn max_analyze_commits(&self, config: &Config) -> Option<u32> {
+        self.max_analyze_commits
+            .or(config.workspace.max_analyze_commits)
     }
 
     pub fn update_request(
@@ -180,6 +181,7 @@ impl Update {
             .with_dependencies_update(self.dependencies_update(config))
             .with_check_only(self.check_only)
             .with_exit_status(self.exit_status)
+            .with_max_analyze_commits(self.max_analyze_commits(config))
             .with_allow_dirty(self.allow_dirty(config));
         match self.get_repo_url(config) {
             Ok(repo_url) => {
@@ -190,6 +192,8 @@ impl Update {
                 e
             ),
         }
+        let forge_type = self.changelog_forge_type(update.repo_url());
+        update = update.with_forge_type(forge_type);
 
         if let Some(registry_manifest_path) = &self.registry_manifest_path {
             let registry_manifest_path = to_utf8_path(registry_manifest_path)?;
@@ -199,7 +203,7 @@ impl Update {
                     format!("cannot find project manifest {registry_manifest_path:?}")
                 })?;
         }
-        update = config.fill_update_config(self.no_changelog, update);
+        update = config.fill_update_config(self.no_changelog, update)?;
         {
             let release_date = self
                 .release_date
@@ -209,9 +213,10 @@ impl Update {
                         .context("cannot parse release_date to y-m-d format")
                 })
                 .transpose()?;
+            let pr_link = update.repo_url().map(|url| url.git_pr_link_for(forge_type));
             let changelog_req = ChangelogRequest {
                 release_date,
-                changelog_config: Some(self.changelog_config(config)?),
+                changelog_config: Some(self.changelog_config(config, pr_link.as_deref())?),
             };
             update = update.with_changelog_req(changelog_req);
         }
@@ -224,16 +229,26 @@ impl Update {
         if let Some(release_commits) = &config.workspace.release_commits {
             update = update.with_release_commits(release_commits)?;
         }
-        if let Some(repo) = update.repo_url() {
-            if let Some(git_client) = self.git_forge(repo.clone())? {
-                update = update.with_git_client(git_client);
-            }
+        if let Some(repo) = update.repo_url()
+            && let Some(token) = self.git_token.clone()
+        {
+            let git_client = git_forge(
+                repo.clone(),
+                SecretString::from(token),
+                self.forge,
+                "create PR",
+            )?;
+            update = update.with_git_client(git_client);
         }
 
         Ok(update)
     }
 
-    fn changelog_config(&self, config: &Config) -> anyhow::Result<GitCliffConfig> {
+    fn changelog_config(
+        &self,
+        config: &Config,
+        pr_link: Option<&str>,
+    ) -> anyhow::Result<GitCliffConfig> {
         let default_config_path = dirs::config_dir()
             .context("cannot get config dir")?
             .join("git-cliff")
@@ -244,7 +259,7 @@ impl Update {
                 if provided_path.exists() {
                     provided_path
                 } else {
-                    anyhow::bail!("cannot read {:?}", provided_path)
+                    anyhow::bail!("cannot read {provided_path:?}")
                 }
             }
             None => &default_config_path,
@@ -256,12 +271,9 @@ impl Update {
                 config.changelog.is_default(),
                 "specifying the `[changelog]` configuration has no effect if `changelog_config` path is specified"
             );
-            GitCliffConfig::parse(path).context("failed to parse git-cliff config file")?
+            GitCliffConfig::load(path).context("failed to parse git-cliff config file")?
         } else {
-            config
-                .changelog
-                .clone()
-                .try_into()
+            changelog_config::to_git_cliff_config(config.changelog.clone(), pr_link)
                 .context("invalid `[changelog] config")?
         };
 
@@ -298,9 +310,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn input_generates_correct_release_request() {
-        let update_args = Update {
+    fn default_args() -> Update {
+        Update {
             manifest_path: None,
             registry_manifest_path: None,
             package: None,
@@ -311,13 +322,19 @@ mod tests {
             changelog_config: None,
             allow_dirty: false,
             repo_url: None,
-            config: None,
-            forge: GitForgeKind::Github,
+            config: ConfigPath::default(),
+            forge: None,
             git_token: None,
+            max_analyze_commits: None,
             check_only: false,
             exit_status: false,
-        };
-        let config: Config = toml::from_str("").unwrap();
+        }
+    }
+
+    #[test]
+    fn input_generates_correct_release_request() {
+        let update_args = default_args();
+        let config = update_args.config.load().unwrap();
         let req = update_args
             .update_request(&config, fake_metadata())
             .unwrap();

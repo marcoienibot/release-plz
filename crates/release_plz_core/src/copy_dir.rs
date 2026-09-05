@@ -27,7 +27,7 @@ pub(crate) fn create_symlink<P: AsRef<Path>, Q: AsRef<Path>>(
 /// `to` is created if it doesn't exist.
 pub fn copy_dir(from: impl AsRef<Utf8Path>, to: impl AsRef<Utf8Path>) -> anyhow::Result<()> {
     let from = from.as_ref();
-    anyhow::ensure!(from.is_dir(), "not a directory: {:?}", from);
+    anyhow::ensure!(from.is_dir(), "not a directory: {from:?}");
     let dir_name = from
         .components()
         .next_back()
@@ -39,7 +39,7 @@ pub fn copy_dir(from: impl AsRef<Utf8Path>, to: impl AsRef<Utf8Path>) -> anyhow:
         fs_err::create_dir_all(&to)?;
     }
 
-    copy_directory(from, to)?;
+    copy_directory(from, &to)?;
 
     Ok(())
 }
@@ -47,7 +47,7 @@ pub fn copy_dir(from: impl AsRef<Utf8Path>, to: impl AsRef<Utf8Path>) -> anyhow:
 /// `to` must exist.
 #[tracing::instrument]
 #[expect(clippy::filetype_is_file)] // we want to distinguish between files and symlinks
-fn copy_directory(from: &Utf8Path, to: Utf8PathBuf) -> Result<(), anyhow::Error> {
+fn copy_directory(from: &Utf8Path, to: &Utf8PathBuf) -> Result<(), anyhow::Error> {
     let walker = ignore::WalkBuilder::new(from)
         // Read hidden files
         .hidden(false)
@@ -60,10 +60,10 @@ fn copy_directory(from: &Utf8Path, to: Utf8PathBuf) -> Result<(), anyhow::Error>
     for entry in walker {
         let entry = entry.context("invalid entry")?;
         let destination =
-            destination_path(&to, &entry, from).context("failed to determine destination path")?;
+            destination_path(to, &entry, from).context("failed to determine destination path")?;
         let file_type = entry.file_type().context("unknown file type")?;
         if file_type.is_dir() {
-            if destination == to {
+            if destination == *to {
                 continue;
             }
             trace!("creating directory {:?}", destination);
@@ -80,15 +80,12 @@ fn copy_directory(from: &Utf8Path, to: Utf8PathBuf) -> Result<(), anyhow::Error>
                 to.join(new_relative)
             };
             create_symlink(&original_link, &destination).with_context(|| {
-                format!(
-                    "cannot create symlink {:?} -> {:?}",
-                    &original_link, &destination
-                )
+                format!("cannot create symlink {original_link:?} -> {destination:?}")
             })?;
         } else if file_type.is_file() {
             trace!("copying file {:?} to {:?}", entry.path(), &destination);
             fs_err::copy(entry.path(), &destination).with_context(|| {
-                format!("cannot copy file {:?} to {:?}", entry.path(), &destination)
+                format!("cannot copy file {:?} to {destination:?}", entry.path())
             })?;
         }
     }

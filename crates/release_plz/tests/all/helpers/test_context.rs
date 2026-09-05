@@ -7,7 +7,7 @@ use cargo_metadata::{
     camino::{Utf8Path, Utf8PathBuf},
     semver::Version,
 };
-use cargo_utils::{CARGO_TOML, LocalManifest};
+use cargo_utils::{CARGO_TOML, LocalManifest, cargo_registries_token_env_var_name};
 use git_cmd::Repo;
 use release_plz_core::{
     DEFAULT_BRANCH_PREFIX, GitClient, GitForge, GitPr, Gitea, Pr, RepoUrl,
@@ -32,11 +32,16 @@ pub struct TestContext {
     test_dir: Utf8TempDir,
     /// Release-plz git client. It's here just for code reuse.
     git_client: GitClient,
+    is_workspace: bool,
     pub repo: Repo,
 }
 
 impl TestContext {
-    async fn init_context() -> Self {
+    pub fn cargo_target_dir(&self) -> Utf8PathBuf {
+        self.test_dir.path().join("target")
+    }
+
+    async fn init_context(is_workspace: bool) -> Self {
         test_logs::init();
         let repo_name = fake_utils::fake_id();
         let gitea = GiteaContext::new(repo_name).await;
@@ -53,12 +58,18 @@ impl TestContext {
             gitea,
             test_dir,
             git_client,
+            is_workspace,
             repo,
         }
     }
 
     pub fn package_path(&self, package_name: &str) -> Utf8PathBuf {
-        self.repo_dir().join(CRATES_DIR).join(package_name)
+        if self.is_workspace {
+            self.repo_dir().join(CRATES_DIR).join(package_name)
+        } else {
+            // If it's not a workspace, the package is at the root of the repo.
+            self.repo_dir()
+        }
     }
 
     pub fn set_package_version(&self, package_name: &str, version: &Version) {
@@ -91,10 +102,10 @@ impl TestContext {
     }
 
     pub async fn new() -> Self {
-        let context = Self::init_context().await;
+        let context = Self::init_context(false).await;
         let package = TestPackage::new(&context.gitea.repo);
         package.cargo_init(context.repo.directory());
-        context.generate_cargo_lock();
+        context.run_cargo_check();
         context.push_all_changes("cargo init");
         context
     }
@@ -105,11 +116,11 @@ impl TestContext {
     }
 
     pub async fn new_workspace_with_packages(crates: &[TestPackage]) -> Self {
-        let context = Self::init_context().await;
+        let context = Self::init_context(true).await;
         let root_cargo_toml = {
             let quoted_crates: Vec<String> = crates
                 .iter()
-                .map(|c| format!("\"{CRATES_DIR}/{}\"", &c.name))
+                .map(|c| format!("\"{CRATES_DIR}/{}\"", c.name))
                 .collect();
             let crates_list = quoted_crates.join(",");
             format!("[workspace]\nresolver = \"3\"\nmembers = [{crates_list}]\n")
@@ -128,7 +139,7 @@ impl TestContext {
             package.write_dependencies(&crate_dir);
         }
 
-        context.generate_cargo_lock();
+        context.run_cargo_check();
         context.push_all_changes("cargo init");
         context
     }
@@ -148,7 +159,8 @@ impl TestContext {
         self.repo.git(&["pull"]).unwrap();
     }
 
-    fn generate_cargo_lock(&self) {
+    /// Running this will create the Cargo.lock file if missing.
+    pub fn run_cargo_check(&self) {
         assert_cmd::Command::new("cargo")
             .current_dir(self.repo.directory())
             .arg("check")
@@ -156,8 +168,23 @@ impl TestContext {
             .success();
     }
 
+    pub fn run_cargo_publish(&self, package_name: &str) {
+        let token_env_var = cargo_registries_token_env_var_name(TEST_REGISTRY).unwrap();
+        assert_cmd::Command::new("cargo")
+            .current_dir(self.repo.directory())
+            .env("CARGO_TARGET_DIR", self.cargo_target_dir())
+            .env(token_env_var, format!("Bearer {}", self.gitea.token))
+            .arg("publish")
+            .arg("-p")
+            .arg(package_name)
+            .arg("--registry")
+            .arg(TEST_REGISTRY)
+            .assert()
+            .success();
+    }
+
     pub fn run_update(&self) -> Assert {
-        super::cmd::release_plz_cmd()
+        super::cmd::release_plz_cmd(&self.cargo_target_dir())
             .current_dir(self.repo_dir())
             .env(RELEASE_PLZ_LOG, log_level())
             .arg("update")
@@ -168,7 +195,7 @@ impl TestContext {
     }
 
     pub fn run_release_pr(&self) -> Assert {
-        super::cmd::release_plz_cmd()
+        super::cmd::release_plz_cmd(&self.cargo_target_dir())
             .current_dir(self.repo_dir())
             .env(RELEASE_PLZ_LOG, log_level())
             .arg("release-pr")
@@ -186,9 +213,11 @@ impl TestContext {
     }
 
     pub fn run_release(&self) -> Assert {
-        super::cmd::release_plz_cmd()
+        let token_env_var = cargo_registries_token_env_var_name(TEST_REGISTRY).unwrap();
+        super::cmd::release_plz_cmd(&self.cargo_target_dir())
             .current_dir(self.repo_dir())
             .env(RELEASE_PLZ_LOG, log_level())
+            .env(token_env_var, format!("Bearer {}", self.gitea.token))
             .arg("release")
             .arg("--verbose")
             .arg("--git-token")
@@ -197,8 +226,6 @@ impl TestContext {
             .arg("gitea")
             .arg("--registry")
             .arg(TEST_REGISTRY)
-            .arg("--token")
-            .arg(format!("Bearer {}", &self.gitea.token))
             .arg("--output")
             .arg("json")
             .timeout(Duration::from_secs(300))
@@ -229,24 +256,32 @@ impl TestContext {
         self.push_all_changes("edit changelog");
     }
 
-    pub fn download_package(&self, dest_dir: &Utf8Path) -> Vec<Package> {
+    pub fn read_changelog(&self) -> String {
+        let changelog_path = self.repo_dir().join("CHANGELOG.md");
+        fs_err::read_to_string(changelog_path).unwrap()
+    }
+
+    pub async fn download_package(&self, dest_dir: &Utf8Path) -> Vec<Package> {
         let crate_name = &self.gitea.repo;
         release_plz_core::PackageDownloader::new([crate_name], dest_dir.as_str())
             .with_registry(TEST_REGISTRY.to_string())
             .with_cargo_cwd(self.repo_dir())
             .download()
+            .await
             .unwrap()
     }
 }
 
 pub fn run_set_version(directory: &Utf8Path, change: &str) {
     let change: Vec<_> = change.split(' ').collect();
-    super::cmd::release_plz_cmd()
+    let target_dir = Utf8PathBuf::from("target");
+    super::cmd::release_plz_cmd(&target_dir)
         .current_dir(directory)
         .env(RELEASE_PLZ_LOG, log_level())
         .arg("set-version")
         .args(&change)
-        .assert();
+        .assert()
+        .success();
 }
 
 fn log_level() -> String {
@@ -265,6 +300,7 @@ fn configure_repo(repo_dir: &Utf8Path, gitea: &GiteaContext) -> Repo {
     // set email
     repo.git(&["config", "user.email", &gitea.user.email()])
         .unwrap();
+    repo.disable_gpg_signing().unwrap();
 
     create_cargo_config(repo_dir, username);
 
@@ -292,10 +328,10 @@ fn cargo_config(username: &str) -> String {
         username
     );
 
-    let config_end = r#"
+    let config_end = r"
 [net]
 git-fetch-with-cli = true
-    "#;
+    ";
     format!("{cargo_registries}{gitea_index}{config_end}")
 }
 

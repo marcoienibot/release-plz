@@ -7,6 +7,296 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.161](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.160...release-plz-v0.3.161) - 2026-08-31
+
+### Fixed
+
+- fix clippy for rust 1.98 ([#2999](https://github.com/release-plz/release-plz/pull/2999))
+
+### Other
+
+- *(deps)* update rust crate cargo to 0.99.0 ([#2997](https://github.com/release-plz/release-plz/pull/2997))
+
+## [0.3.160](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.159...release-plz-v0.3.160) - 2026-07-13
+
+### Added
+
+- Github Enterprise Server support ([#2846](https://github.com/release-plz/release-plz/pull/2846))
+
+### Fixed
+
+- Parse 'footer' in commit parsers ([#2929](https://github.com/release-plz/release-plz/pull/2929))
+- fix clippy lint of rust 1.97 ([#2932](https://github.com/release-plz/release-plz/pull/2932))
+
+### Other
+
+- update to tera v2 ([#2914](https://github.com/release-plz/release-plz/pull/2914))
+
+## [0.3.159](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.158...release-plz-v0.3.159) - 2026-06-09
+
+### Fixed
+
+- *(set-version)* update Cargo.lock after version changes ([#2812](https://github.com/release-plz/release-plz/pull/2812))
+
+### Other
+
+- Bump Cargo to 0.97 ([#2869](https://github.com/release-plz/release-plz/pull/2869))
+- force cargo quiet to false ([#2889](https://github.com/release-plz/release-plz/pull/2889))
+- update to git2 0.21 ([#2872](https://github.com/release-plz/release-plz/pull/2872))
+
+## [0.3.158](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.157...release-plz-v0.3.158) - 2026-05-10
+
+### Other
+
+- update Cargo.toml dependencies
+- update dependencies ([#2831](https://github.com/release-plz/release-plz/pull/2831))
+
+## [0.3.157](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.156...release-plz-v0.3.157) - 2026-03-07
+
+### Fixed
+
+- *(git-only)* handle root-package workspace path dependencies ([#2655](https://github.com/release-plz/release-plz/pull/2655))
+
+## [0.3.156](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.155...release-plz-v0.3.156) - 2026-02-16
+
+### Other
+
+- update Cargo.toml dependencies
+- use cargo info to understand if package was published ([#2645](https://github.com/release-plz/release-plz/pull/2645))
+
+## [0.3.155](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.154...release-plz-v0.3.155) - 2026-02-05
+
+### Fixed
+
+- correctly recognize when crate already published ([#2649](https://github.com/release-plz/release-plz/pull/2649))
+- read cargo registry token from env var correctly ([#2647](https://github.com/release-plz/release-plz/pull/2647))
+
+### Other
+
+- use cargo env variable for registry token ([#2637](https://github.com/release-plz/release-plz/pull/2637))
+- update dependencies ([#2646](https://github.com/release-plz/release-plz/pull/2646))
+
+## [0.3.154](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.153...release-plz-v0.3.154) - 2026-02-03
+
+### Fixed
+
+- git-only works with local dependencies ([#2629](https://github.com/release-plz/release-plz/pull/2629))
+
+### Other
+
+- improve git-only workspace test ([#2635](https://github.com/release-plz/release-plz/pull/2635))
+- test cargo lock update ([#2632](https://github.com/release-plz/release-plz/pull/2632))
+- *(tests)* show release-plz stdout better ([#2630](https://github.com/release-plz/release-plz/pull/2630))
+- remove release_plz_core tests ([#2633](https://github.com/release-plz/release-plz/pull/2633))
+
+## [0.3.153](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.152...release-plz-v0.3.153) - 2026-01-24
+
+### Other
+
+- specify cargo-binstall pkg-fmt for faster download ([#2612](https://github.com/release-plz/release-plz/pull/2612))
+
+## [0.3.152](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.151...release-plz-v0.3.152) - 2026-01-23
+
+### Fixed
+
+- consider private `git_only` packages ([#2603](https://github.com/release-plz/release-plz/pull/2603))
+
+### Other
+
+- don't check crates-io on git-only mode ([#2596](https://github.com/release-plz/release-plz/pull/2596))
+- Improve changelog generation if version already bumped ([#2585](https://github.com/release-plz/release-plz/pull/2585))
+- remove unused function ([#2592](https://github.com/release-plz/release-plz/pull/2592))
+
+## [0.3.151](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.150...release-plz-v0.3.151) - 2026-01-17
+
+### Added
+
+- add `git_only` config option to use git tags to determine the latest version ([#2512](https://github.com/release-plz/release-plz/pull/2512))
+
+### Other
+
+- Generate changelog even when version has already been bumped ([#2577](https://github.com/release-plz/release-plz/pull/2577))
+- Add `custom_minor_increment_regex` ([#2582](https://github.com/release-plz/release-plz/pull/2582))
+- Add `custom_minor_increment_regex` ([#2574](https://github.com/release-plz/release-plz/pull/2574))
+- update to reqwest 0.13 ([#2570](https://github.com/release-plz/release-plz/pull/2570))
+- disable gpg signing in tests ([#2552](https://github.com/release-plz/release-plz/pull/2552))
+- update git-cliff to version 2.11 ([#2537](https://github.com/release-plz/release-plz/pull/2537))
+
+## [0.3.150](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.149...release-plz-v0.3.150) - 2025-12-05
+
+### Other
+
+- Limit first-release commit scan and document max_analyze_commits ([#2497](https://github.com/release-plz/release-plz/pull/2497))
+- Show full error message for trusted publishing token failure ([#2516](https://github.com/release-plz/release-plz/pull/2516))
+
+## [0.3.149](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.148...release-plz-v0.3.149) - 2025-11-24
+
+### Other
+
+- update to checkout v6 action ([#2508](https://github.com/release-plz/release-plz/pull/2508))
+- address code quality issues ([#2498](https://github.com/release-plz/release-plz/pull/2498))
+- update dependencies and fix clippy lint ([#2472](https://github.com/release-plz/release-plz/pull/2472))
+
+## [0.3.148](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.147...release-plz-v0.3.148) - 2025-10-10
+
+### Added
+
+- set `persist-credentials: false` in init ([#2417](https://github.com/release-plz/release-plz/pull/2417))
+- Add support for postprocessors in changelog ([#2445](https://github.com/release-plz/release-plz/pull/2445))
+- release-plz can now publish backport PRs ([#2438](https://github.com/release-plz/release-plz/pull/2438))
+
+### Other
+
+- cargo update and fix clippy lints ([#2450](https://github.com/release-plz/release-plz/pull/2450))
+- remove unused structs ([#2426](https://github.com/release-plz/release-plz/pull/2426))
+- update git-url-parse to v0.6.0 ([#2427](https://github.com/release-plz/release-plz/pull/2427))
+
+## [0.3.147](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.146...release-plz-v0.3.147) - 2025-09-13
+
+### Other
+
+- update Cargo.toml dependencies
+- update git-url-parse to 0.5 ([#2412](https://github.com/release-plz/release-plz/pull/2412))
+
+## [0.3.146](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.145...release-plz-v0.3.146) - 2025-09-13
+
+### Added
+
+- implement trusted publishing ([#2396](https://github.com/release-plz/release-plz/pull/2396)) ([#2407](https://github.com/release-plz/release-plz/pull/2407)) ([#2406](https://github.com/release-plz/release-plz/pull/2406))
+- update trusted publishing initialization code ([#2408](https://github.com/release-plz/release-plz/pull/2408))
+
+## [0.3.145](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.144...release-plz-v0.3.145) - 2025-09-12
+
+### Other
+
+- use yaml anchors to simplify workflows ([#2393](https://github.com/release-plz/release-plz/pull/2393))
+- improve error messages of some http calls ([#2398](https://github.com/release-plz/release-plz/pull/2398))
+- specify at which commit we can't compare packages ([#2397](https://github.com/release-plz/release-plz/pull/2397))
+
+## [0.3.144](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.143...release-plz-v0.3.144) - 2025-09-09
+
+### Added
+
+- use api to update branches ([#2365](https://github.com/release-plz/release-plz/pull/2365))
+
+### Fixed
+
+- load config once ([#2388](https://github.com/release-plz/release-plz/pull/2388))
+
+### Other
+
+- make changelog parsing more flexible ([#2391](https://github.com/release-plz/release-plz/pull/2391))
+- isolate tests by running in unique cargo target dirs ([#2387](https://github.com/release-plz/release-plz/pull/2387))
+- update github checkout action ([#2384](https://github.com/release-plz/release-plz/pull/2384))
+- require default branch to be up to date ([#2386](https://github.com/release-plz/release-plz/pull/2386))
+- improve create branch error message ([#2385](https://github.com/release-plz/release-plz/pull/2385))
+
+## [0.3.143](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.142...release-plz-v0.3.143) - 2025-09-05
+
+### Added
+
+- use api to create tags ([#2362](https://github.com/release-plz/release-plz/pull/2362))
+
+### Fixed
+
+- show changelog preview in the PR body when changelog format is not standard ([#2367](https://github.com/release-plz/release-plz/pull/2367))
+- delete branch only if it exists ([#2378](https://github.com/release-plz/release-plz/pull/2378))
+
+### Other
+
+- improve error messages ([#2377](https://github.com/release-plz/release-plz/pull/2377))
+
+## [0.3.142](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.141...release-plz-v0.3.142) - 2025-08-31
+
+### Added
+
+- use api to delete branches ([#2356](https://github.com/release-plz/release-plz/pull/2356))
+- use api to create branches ([#2355](https://github.com/release-plz/release-plz/pull/2355))
+- add a fallback index to attempt the legacy hash if the primary index fails ([#2341](https://github.com/release-plz/release-plz/pull/2341))
+
+### Fixed
+
+- respect `publish = false` config during registry lookups ([#2357](https://github.com/release-plz/release-plz/pull/2357))
+- recognize gitea-actions as bot account ([#2347](https://github.com/release-plz/release-plz/pull/2347))
+
+## [0.3.141](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.140...release-plz-v0.3.141) - 2025-08-15
+
+### Fixed
+
+- Trigger release of downstream with commit regex ([#2338](https://github.com/release-plz/release-plz/pull/2338))
+
+## [0.3.140](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.139...release-plz-v0.3.140) - 2025-08-13
+
+### Added
+
+- add $id field to schema ([#2320](https://github.com/release-plz/release-plz/pull/2320))
+
+### Other
+
+- update dependencies and fix lints ([#2336](https://github.com/release-plz/release-plz/pull/2336))
+- update to git-cliff-core 2.10.0 ([#2326](https://github.com/release-plz/release-plz/pull/2326))
+
+## [0.3.139](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.138...release-plz-v0.3.139) - 2025-07-19
+
+### Added
+
+- *(init)* print settings URLs to enable trusted publishing ([#2303](https://github.com/release-plz/release-plz/pull/2303))
+
+### Fixed
+
+- return error if default config has invalid toml ([#2311](https://github.com/release-plz/release-plz/pull/2311))
+- Retry HTTP/2 GOAWAY from registry with HTTP/1.1 ([#2314](https://github.com/release-plz/release-plz/pull/2314))
+
+### Other
+
+- update git-cliff-core to v2.9.1 ([#2265](https://github.com/release-plz/release-plz/pull/2265))
+- add new dependency graph ([#2304](https://github.com/release-plz/release-plz/pull/2304))
+
+## [0.3.138](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.137...release-plz-v0.3.138) - 2025-07-09
+
+### Added
+
+- *(init)* add support for trusted publishing ([#2300](https://github.com/release-plz/release-plz/pull/2300))
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.3.137](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.136...release-plz-v0.3.137) - 2025-07-01
+
+### Fixed
+
+- allow license-file in Cargo.toml ([#2287](https://github.com/release-plz/release-plz/pull/2287))
+
+### Other
+
+- validate there's no release pr open after landing a release pr ([#2283](https://github.com/release-plz/release-plz/pull/2283))
+
+## [0.3.136](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.135...release-plz-v0.3.136) - 2025-06-19
+
+### Fixed
+
+- don't quit if readme doesn't exist ([#2257](https://github.com/release-plz/release-plz/pull/2257))
+
+### Other
+
+- tidy up config path handling ([#2268](https://github.com/release-plz/release-plz/pull/2268))
+- Add some more logging related to package publishing ([#2270](https://github.com/release-plz/release-plz/pull/2270))
+- update dependencies ([#2260](https://github.com/release-plz/release-plz/pull/2260))
+- update cargo metadata to 0.20 ([#2249](https://github.com/release-plz/release-plz/pull/2249))
+
+## [0.3.135](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.134...release-plz-v0.3.135) - 2025-05-18
+
+### Fixed
+
+- fix clippy lints ([#2235](https://github.com/release-plz/release-plz/pull/2235))
+
+### Other
+
+- improve command descriptions in the help menu ([#2217](https://github.com/release-plz/release-plz/pull/2217))
+- Indicate when diff calculation begins to avoid appearing stalled ([#2221](https://github.com/release-plz/release-plz/pull/2221))
+- log when running cargo-semver-checks ([#2219](https://github.com/release-plz/release-plz/pull/2219))
+
 ## [0.3.134](https://github.com/release-plz/release-plz/compare/release-plz-v0.3.133...release-plz-v0.3.134) - 2025-05-08
 
 ### Fixed

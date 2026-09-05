@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.28](https://github.com/release-plz/release-plz/compare/git_cmd-v0.6.27...git_cmd-v0.6.28) - 2026-02-16
+
+### Fixed
+
+- Improve error message for committed file that is in .gitignore ([#2654](https://github.com/release-plz/release-plz/pull/2654))
+
+## [0.6.27](https://github.com/release-plz/release-plz/compare/git_cmd-v0.6.26...git_cmd-v0.6.27) - 2026-01-17
+
+### Added
+
+- add ability to create lightweight tags ([#2512](https://github.com/release-plz/release-plz/pull/2512))
+- add ability to disable tag gpgsign ([#2561](https://github.com/release-plz/release-plz/pull/2561))
+- add ability to disable gpg signing ([#2552](https://github.com/release-plz/release-plz/pull/2552))
+
+## [0.6.26](https://github.com/release-plz/release-plz/compare/git_cmd-v0.6.25...git_cmd-v0.6.26) - 2025-09-13
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.6.25](https://github.com/release-plz/release-plz/compare/git_cmd-v0.6.24...git_cmd-v0.6.25) - 2025-09-05
+
+### Other
+
+- improve error messages ([#2377](https://github.com/release-plz/release-plz/pull/2377))
+
+## [0.6.24](https://github.com/release-plz/release-plz/compare/git_cmd-v0.6.23...git_cmd-v0.6.24) - 2025-06-19
+
+### Other
+
+- update dependencies ([#2260](https://github.com/release-plz/release-plz/pull/2260))
+
 ## [0.6.23](https://github.com/release-plz/release-plz/compare/git_cmd-v0.6.22...git_cmd-v0.6.23) - 2025-03-17
 
 ### Other
