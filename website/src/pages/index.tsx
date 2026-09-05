@@ -58,10 +58,7 @@ function QuickStartSection() {
 
 function UsageBanner() {
   return (
-    <div
-      className={clsx(styles.section, "text--center")}
-      style={{ padding: "12px 0" }}
-    >
+    <div className={clsx(styles.section, "text--center")} style={{ padding: "12px 0" }}>
       <div className="container">
         <Link
           to="https://github.com/release-plz/action/network/dependents"
