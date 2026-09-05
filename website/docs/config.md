@@ -234,7 +234,8 @@ introduction or footer outside these markers. Packages with `release = false` or
 `changelog_update = false` are excluded. `--no-changelog` also disables the overview.
 The path must differ from every package changelog and cannot contain `..`.
 Each included package must have its own changelog path; a shared input cannot be
-attributed to independent package histories.
+attributed to independent package histories. When combined with `pr_per_package`,
+all releases form one atomic group because they update the same overview file.
 
 #### The `dependencies_update` field
 
@@ -552,6 +553,19 @@ This PR was generated with [release-plz](https://github.com/release-plz/release-
 """
 ````
 
+#### The `pr_per_package` field
+
+Set `pr_per_package = true` in `[workspace]` to open a separate PR for each independent
+package. The default remains one combined PR. Packages connected by dependencies, shared
+workspace versions, `version_group`, shared changelog files, or `changelog_include` are
+released together in an atomic PR. The full eligible workspace determines these groups,
+so branch identity is stable when only some members change.
+
+`release-pr --package NAME` selects that package's atomic group, including required peers;
+it does not open unrelated groups. `release = false` packages are excluded. Close or merge
+existing release PRs before switching between combined and per-package modes. This check
+prevents silently replacing or closing PRs from the previous mode.
+
 #### The `pr_branch_prefix` field
 
 Prefix for the release PR branch. By default, it's set to: `release-plz-`
@@ -559,6 +573,22 @@ Prefix for the release PR branch. By default, it's set to: `release-plz-`
 :::warning
 Before changing the release-plz branch you should close the old release PR.
 :::
+
+The prefix accepts Tera templates. `{{ branch }}` is the target branch. `{{ package }}` and
+`{{ version }}` are available only when the entire workspace has one Cargo-publishable package;
+using either unguarded in a multi-package workspace is an error, even with `--package`.
+Here `version` is the version on the base branch, not the computed next version. This keeps
+PR discovery stable when the planned release changes from a patch to a minor release.
+
+```toml
+[workspace]
+pr_branch_prefix = "release-{{ branch }}-{{ package }}-{{ version }}-"
+```
+
+The rendered prefix must be nonempty and valid in a Git branch. Templated PR bodies include a
+hidden identity marker so `release_always = false` still recognizes the merged PR after its
+version bump. Preserve that marker when editing a generated PR body. Custom prefixes never
+adopt an unrelated legacy `release-plz/` PR.
 
 #### The `pr_draft` field
 

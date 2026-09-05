@@ -85,6 +85,53 @@ impl Pr {
     }
 }
 
+/// Resolve identity from the base checkout, never from the newly calculated bump.
+pub(crate) fn render_branch_prefix(
+    template: &str,
+    branch: &str,
+    packages: &[cargo_metadata::Package],
+) -> anyhow::Result<String> {
+    let mut context = tera::Context::new();
+    context.insert("branch", branch);
+    if let [package] = packages {
+        context.insert(PACKAGE_VAR, package.name.as_str());
+        context.insert(VERSION_VAR, &package.version.to_string());
+    }
+    let prefix = render_template(template, &context, "pr_branch_prefix")?;
+    anyhow::ensure!(
+        !prefix.is_empty()
+            && git2::Reference::is_valid_name(&format!("refs/heads/{prefix}release")),
+        "pr_branch_prefix must render to a nonempty valid Git branch prefix"
+    );
+    Ok(prefix)
+}
+
+pub(crate) fn prefix_marker(template: &str, branch: &str) -> String {
+    use base64::Engine as _;
+    let identity = serde_json::to_vec(&(template, branch)).expect("strings serialize");
+    format!(
+        "<!-- release-plz-prefix:{} -->",
+        base64::engine::general_purpose::STANDARD.encode(identity)
+    )
+}
+
+pub(crate) fn matches_release_prefix(
+    template: &str,
+    branch: &str,
+    head: &str,
+    body: Option<&str>,
+) -> bool {
+    if is_prefix_template(template) {
+        body.is_some_and(|body| body.contains(&prefix_marker(template, branch)))
+    } else {
+        head.starts_with(template)
+    }
+}
+
+pub(crate) fn is_prefix_template(prefix: &str) -> bool {
+    prefix.contains("{{") || prefix.contains("{%")
+}
+
 fn release_branch(prefix: &str) -> String {
     let now = chrono::offset::Utc::now();
     // Convert to a string of format "2018-01-26T18:30:09Z".
@@ -191,6 +238,47 @@ fn trim_pr_body(body: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefix_templates_use_stable_base_metadata_and_reject_ambiguous_packages() {
+        let package: cargo_metadata::Package = fake_package::FakePackage::new("MyCrate").into();
+        let template = "release-{{ branch }}-{{ package }}-{{ version }}-";
+        let prefix =
+            render_branch_prefix(template, "0.8.x", std::slice::from_ref(&package)).unwrap();
+        assert_eq!(prefix, "release-0.8.x-MyCrate-0.1.0-");
+        assert!(release_branch(&prefix).starts_with(&prefix));
+        assert!(render_branch_prefix(template, "main", &[package.clone(), package]).is_err());
+        assert!(render_branch_prefix("", "main", &[]).is_err());
+        assert!(render_branch_prefix("bad prefix-", "main", &[]).is_err());
+        assert_ne!(
+            prefix_marker(template, "main"),
+            prefix_marker(template, "0.8.x")
+        );
+    }
+
+    #[test]
+    fn merged_prefix_identity_survives_version_change_but_not_branch_change() {
+        let template = "release-{{ version }}-";
+        let body = prefix_marker(template, "main");
+        assert!(matches_release_prefix(
+            template,
+            "main",
+            "release-0.1.0-2026-01-01",
+            Some(&body)
+        ));
+        assert!(!matches_release_prefix(
+            template,
+            "0.8.x",
+            "release-0.1.0-2026-01-01",
+            Some(&body)
+        ));
+        assert!(!matches_release_prefix(
+            "different-{{ version }}-",
+            "main",
+            "release-0.1.0-2026-01-01",
+            Some(&body)
+        ));
+    }
 
     #[test]
     fn default_pr_body_template_renders() {

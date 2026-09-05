@@ -181,6 +181,10 @@ pub struct Workspace {
     /// # PR Name
     /// Tera template of the pull request's name created by release-plz.
     pub pr_name: Option<String>,
+    /// # PR Per Package
+    /// - If `true`, create a separate PR for every package.
+    /// - If `false` or unspecified, create a single PR to release all packages at once.
+    pub pr_per_package: Option<bool>,
     /// # PR Body
     /// Tera template of the pull request's body created by release-plz.
     pub pr_body: Option<String>,
@@ -245,6 +249,7 @@ impl Default for Workspace {
             release_always: None,
             max_analyze_commits: default_max_analyze_commits(),
             workspace_changelog: None,
+            pr_per_package: None,
         }
     }
 }
@@ -653,6 +658,7 @@ mod tests {
                 pr_draft: false,
                 pr_labels: vec![],
                 pr_branch_prefix: Some("f-".to_string()),
+                pr_per_package: None,
                 publish_timeout: Some("10m".to_string()),
                 release_commits: Some("^feat:".to_string()),
                 release_always: None,
@@ -766,6 +772,7 @@ mod tests {
                 ),
                 pr_name: None,
                 pr_body: None,
+                pr_per_package: None,
                 pr_draft: false,
                 pr_labels: vec!["label1".to_string()],
                 pr_branch_prefix: Some("f-".to_string()),

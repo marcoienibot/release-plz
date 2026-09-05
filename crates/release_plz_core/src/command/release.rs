@@ -722,9 +722,14 @@ async fn should_release(
 ) -> anyhow::Result<ShouldRelease> {
     let last_commit = repo.current_commit_hash()?;
     let prs = git_client.associated_prs(&last_commit).await?;
-    let associated_release_pr = prs
-        .iter()
-        .find(|pr| pr.branch().starts_with(&input.branch_prefix));
+    let associated_release_pr = prs.iter().find(|pr| {
+        crate::pr::matches_release_prefix(
+            &input.branch_prefix,
+            repo.original_branch(),
+            pr.branch(),
+            pr.body.as_deref(),
+        )
+    });
 
     match associated_release_pr {
         Some(pr) => {

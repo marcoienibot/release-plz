@@ -194,6 +194,11 @@ impl UpdateRequest {
         self.registry.as_deref()
     }
 
+    pub(crate) fn without_single_package(mut self) -> Self {
+        self.single_package = None;
+        self
+    }
+
     pub fn with_single_package(self, package: String) -> Self {
         Self {
             single_package: Some(package),
