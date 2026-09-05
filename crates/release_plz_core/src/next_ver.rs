@@ -33,6 +33,11 @@ use tar::Archive;
 use toml_edit::TableLike;
 use tracing::{debug, info, instrument, trace};
 
+struct ReconstructedWorkspace {
+    worktree: GitWorkTree,
+    packaged: bool,
+}
+
 struct ReconstructedWorkspaces<T> {
     commit_indexes: BTreeMap<String, usize>,
     resources: Vec<T>,
@@ -143,7 +148,7 @@ fn process_git_only_package(
     unreleased_project_repo: &mut GitRepo,
     input: &UpdateRequest,
     is_multi_package: bool,
-    reconstructed_workspaces: &mut ReconstructedWorkspaces<GitWorkTree>,
+    reconstructed_workspaces: &mut ReconstructedWorkspaces<ReconstructedWorkspace>,
 ) -> anyhow::Result<Option<RegistryPackage>> {
     // Get the release tag template, falling back to default based on project structure
     let template = input
@@ -190,8 +195,14 @@ fn process_git_only_package(
 
         // Package the whole workspace so unpublished path dependencies are
         // materialized in Cargo's temporary local registry.
-        run_cargo_package(&worktree).context("run cargo package")?;
-        Ok::<_, anyhow::Error>(worktree)
+        let packaged = match run_cargo_package(&worktree) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!("Cannot package historical workspace: {error:#}. Comparing Cargo-selected source files instead.");
+                false
+            }
+        };
+        Ok::<_, anyhow::Error>(ReconstructedWorkspace { worktree, packaged })
     })?;
     if was_reconstructed {
         debug!(
@@ -199,6 +210,24 @@ fn process_git_only_package(
             package.name
         );
     }
+
+    if !worktree.packaged {
+        let workspace = to_utf8_path(worktree.worktree.path())?;
+        let metadata = get_manifest_metadata(&workspace.join("Cargo.toml"))
+            .context("read historical source workspace after packaging failed")?;
+        let source_package = metadata
+            .workspace_packages()
+            .into_iter()
+            .find(|p| p.name == package.name)
+            .context("find package in historical source workspace")?
+            .clone();
+        return Ok(Some(RegistryPackage::from_source(
+            source_package,
+            release_commit,
+            metadata.workspace_root,
+        )));
+    }
+    let worktree = &worktree.worktree;
 
     // Metadata paths point into the cached worktree. Any error aborts collection and drops
     // all reconstructed workspaces, so an unusable artifact cannot be reused.
@@ -475,7 +504,14 @@ fn collect_git_only_packages(
         }
     }
 
-    Ok((all_packages, reconstructed_workspaces.into_resources()))
+    Ok((
+        all_packages,
+        reconstructed_workspaces
+            .into_resources()
+            .into_iter()
+            .map(|workspace| workspace.worktree)
+            .collect(),
+    ))
 }
 
 /// Fetch packages from the registry and return their metadata.
@@ -829,5 +865,112 @@ mod tests {
         assert!(existing.validate().is_ok());
         assert_ne!(temporary.path(), existing_path);
         assert!(repo.find_branch("mylib", git2::BranchType::Local).is_ok());
+    }
+
+    #[tokio::test]
+    async fn source_baseline_updates_versionless_workspace_end_to_end() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = crate::fs_utils::to_utf8_path(temp.path()).unwrap();
+        let repo = git2::Repository::init(root).unwrap();
+        repo.remote("origin", "https://github.com/example/source-test")
+            .unwrap();
+        fs_err::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"app\",\"internal\"]\nresolver=\"3\"\n",
+        )
+        .unwrap();
+        fs_err::write(root.join(".gitignore"), "target/\n").unwrap();
+        fs_err::write(root.join("README.md"), "original readme").unwrap();
+        for name in ["app", "internal"] {
+            let package = root.join(name);
+            fs_err::create_dir_all(package.join("src")).unwrap();
+            let extra = if name == "app" {
+                "readme=\"../README.md\"\n[dependencies]\ninternal={path=\"../internal\"}\n"
+            } else {
+                ""
+            };
+            fs_err::write(package.join("Cargo.toml"), format!("[package]\nname=\"{name}\"\nversion=\"0.1.0\"\nedition=\"2024\"\npublish=false\n{extra}")).unwrap();
+            fs_err::write(
+                package.join(if name == "app" {
+                    "src/main.rs"
+                } else {
+                    "src/lib.rs"
+                }),
+                "fn main() {}",
+            )
+            .unwrap();
+        }
+        let commit = |message: &str| {
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let signature = git2::Signature::now("test", "test@example.com").unwrap();
+            let parent = repo.head().ok().map(|head| head.peel_to_commit().unwrap());
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &parent.iter().collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        // Generate the lockfile before the release tag so binary lock comparison
+        // exercises the historical workspace root rather than a member directory.
+        assert!(
+            crate::cargo::run_cargo(root, &["generate-lockfile", "--offline"])
+                .unwrap()
+                .status
+                .success()
+        );
+        let initial = commit("initial");
+        for name in ["app", "internal"] {
+            repo.tag_lightweight(
+                &format!("{name}-v0.1.0"),
+                &repo.find_object(initial, None).unwrap(),
+                false,
+            )
+            .unwrap();
+        }
+        {
+            let mut original = GitRepo::open(root).unwrap();
+            let (_repo, worktree) =
+                get_temp_worktree_and_repo(&mut original, "versionless-repro").unwrap();
+            let error = run_cargo_package(&worktree).unwrap_err();
+            assert!(format!("{error:#}").contains("does not specify a version"));
+        }
+        let make_request = || {
+            UpdateRequest::new(get_manifest_metadata(&root.join("Cargo.toml")).unwrap())
+                .unwrap()
+                .with_default_package_config(crate::UpdateConfig {
+                    git_only: Some(true),
+                    publish: false,
+                    semver_check: false,
+                    tag_name_template: Some("{{ package }}-v{{ version }}".to_owned()),
+                    ..Default::default()
+                })
+        };
+        let (unchanged, _) = crate::update(&make_request()).await.unwrap();
+        assert!(
+            unchanged.updates().is_empty(),
+            "an identical source baseline must not release"
+        );
+        fs_err::write(root.join("README.md"), "updated external readme").unwrap();
+        commit("fix: update external readme");
+        fs_err::write(root.join("unrelated.txt"), "not part of app").unwrap();
+        commit("chore: unrelated docs");
+        let (changed, _) = crate::update(&make_request()).await.unwrap();
+        assert_eq!(changed.updates().len(), 1);
+        assert_eq!(changed.updates()[0].0.name.as_str(), "app");
+        assert_eq!(changed.updates()[0].1.version, Version::new(0, 1, 1));
+        let manifest = cargo_utils::LocalManifest::try_new(&root.join("app/Cargo.toml")).unwrap();
+        assert_eq!(manifest.data["package"]["version"].as_str(), Some("0.1.1"));
+        let changelog = fs_err::read_to_string(root.join("app/CHANGELOG.md")).unwrap();
+        assert!(changelog.contains("update external readme"));
+        assert!(!changelog.contains("unrelated docs"));
     }
 }

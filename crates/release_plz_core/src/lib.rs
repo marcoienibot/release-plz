@@ -24,6 +24,7 @@ pub(crate) mod release_regex;
 mod repo_url;
 mod response_ext;
 pub mod semver_check;
+mod source_compare;
 mod tera;
 mod tmp_repo;
 mod toml_compare;

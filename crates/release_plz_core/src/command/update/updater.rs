@@ -620,7 +620,24 @@ impl Updater<'_> {
         tag_commit: Option<&str>,
         diff: &mut Diff,
     ) -> anyhow::Result<()> {
-        let pathbufs_to_check = pathbufs_to_check(package_path, package)?;
+        let mut pathbufs_to_check = pathbufs_to_check(package_path, package)?;
+        if let Some(baseline) =
+            registry_package.filter(|baseline| baseline.source_workspace().is_some())
+        {
+            let mut paths = crate::source_compare::package_paths(&package.name, package_path)?;
+            paths.extend(crate::source_compare::package_paths(
+                &package.name,
+                baseline.package.package_path()?,
+            )?);
+            // The package directory already covers descendants. Add external
+            // source paths (including symlink aliases) to history traversal too.
+            pathbufs_to_check.extend(
+                paths
+                    .into_iter()
+                    .map(|path| repository.directory().join(path))
+                    .filter(|path| !path.starts_with(package_path)),
+            );
+        }
         let paths_to_check: Vec<&Path> = pathbufs_to_check.iter().map(|p| p.as_ref()).collect();
         let max_analyze_commits = if registry_package.is_none() {
             match self.req.max_analyze_commits() {
@@ -638,7 +655,34 @@ impl Updater<'_> {
             // Check if files changed in git commit belong to the current package.
             // This is required because a package can contain another package in a subdirectory.
             let are_changed_files_in_pkg = || {
-                self.are_changed_files_in_package(package_path, repository, &current_commit_hash)
+                if let Some(baseline) =
+                    registry_package.filter(|baseline| baseline.source_workspace().is_some())
+                {
+                    let paths = || -> anyhow::Result<HashSet<Utf8PathBuf>> {
+                        let mut paths =
+                            crate::source_compare::package_paths(&package.name, package_path)?;
+                        paths.extend(crate::source_compare::package_paths(
+                            &package.name,
+                            baseline.package.package_path()?,
+                        )?);
+                        Ok(paths)
+                    };
+                    match paths() {
+                        Ok(paths) => Ok(!paths.is_disjoint(&repository.files_of_current_commit()?)),
+                        Err(error) => {
+                            warn!(
+                                "Cannot determine source files at {current_commit_hash}: {error:#}"
+                            );
+                            Ok(true)
+                        }
+                    }
+                } else {
+                    self.are_changed_files_in_package(
+                        package_path,
+                        repository,
+                        &current_commit_hash,
+                    )
+                }
             };
 
             if let Some(registry_package) = registry_package {
@@ -652,7 +696,7 @@ impl Updater<'_> {
                     repository,
                     package,
                     package_path,
-                    registry_package_path,
+                    registry_package,
                 ).with_context(|| format!("failed to check package equality for `{}` at commit {current_commit_hash}", package.name))?;
                 let commit_too_old = || {
                     is_commit_too_old(
@@ -674,7 +718,9 @@ impl Updater<'_> {
                             diff,
                             &registry_package.package,
                             package,
-                            registry_package_path,
+                            registry_package
+                                .source_workspace()
+                                .unwrap_or(registry_package_path),
                         )?;
                     }
                     // The local package is identical to the registry one, which means that
@@ -726,9 +772,13 @@ impl Updater<'_> {
         repository: &Repo,
         package: &Package,
         package_path: &Utf8Path,
-        registry_package_path: &Utf8Path,
+        registry_package: &RegistryPackage,
     ) -> anyhow::Result<bool> {
-        if crate::is_readme_updated(&package.name, package_path, registry_package_path)? {
+        let registry_package_path = registry_package.package.package_path()?;
+        let source_baseline = registry_package.source_workspace().is_some();
+        if !source_baseline
+            && crate::is_readme_updated(&package.name, package_path, registry_package_path)?
+        {
             debug!("{}: README updated", package.name);
             return Ok(false);
         }
@@ -737,8 +787,16 @@ impl Updater<'_> {
         let cargo_lock_path = self
             .get_cargo_lock_path(repository)
             .context("failed to determine Cargo.lock path")?;
-        let are_packages_equal = crate::are_packages_equal(package_path, registry_package_path)
-            .context("cannot compare packages")?;
+        let are_packages_equal = if source_baseline {
+            crate::source_compare::are_packages_equal(
+                &package.name,
+                package_path,
+                registry_package_path,
+            )
+        } else {
+            crate::are_packages_equal(package_path, registry_package_path)
+        }
+        .context("cannot compare packages")?;
         if let Some(cargo_lock_path) = cargo_lock_path.as_deref() {
             // Revert any changes to `Cargo.lock`
             repository

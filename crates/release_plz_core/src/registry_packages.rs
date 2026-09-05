@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use cargo_metadata::{Package, camino::Utf8Path};
+use cargo_metadata::{
+    Package,
+    camino::{Utf8Path, Utf8PathBuf},
+};
 use git_cmd::git_in_dir;
 use itertools::Itertools;
 use tempfile::{TempDir, tempdir};
@@ -21,11 +24,29 @@ pub struct RegistryPackage {
     pub package: Package,
     /// The SHA1 hash of the commit when the package was published.
     sha1: Option<String>,
+    source_workspace: Option<Utf8PathBuf>,
 }
 
 impl RegistryPackage {
     pub fn new(package: Package, sha1: Option<String>) -> Self {
-        Self { package, sha1 }
+        Self {
+            package,
+            sha1,
+            source_workspace: None,
+        }
+    }
+
+    pub(crate) fn from_source(package: Package, sha1: String, workspace: Utf8PathBuf) -> Self {
+        Self {
+            package,
+            sha1: Some(sha1),
+            source_workspace: Some(workspace),
+        }
+    }
+
+    /// Present only for an explicitly reconstructed git-only source baseline.
+    pub(crate) fn source_workspace(&self) -> Option<&Utf8Path> {
+        self.source_workspace.as_deref()
     }
 
     pub fn published_at_sha1(&self) -> Option<&str> {
@@ -69,6 +90,7 @@ pub async fn get_registry_packages(
                 .map(|p| RegistryPackage {
                     package: p,
                     sha1: None,
+                    source_workspace: None,
                 })
                 .collect(),
         ),
@@ -171,7 +193,7 @@ fn initialize_registry_package(packages: Vec<Package>) -> anyhow::Result<Vec<Reg
                 commit_init()?;
             }
         }
-        registry_packages.push(RegistryPackage { package: p, sha1 });
+        registry_packages.push(RegistryPackage::new(p, sha1));
     }
     Ok(registry_packages)
 }
