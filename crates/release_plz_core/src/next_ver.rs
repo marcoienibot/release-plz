@@ -410,7 +410,7 @@ pub async fn next_versions(input: &UpdateRequest) -> anyhow::Result<(PackagesUpd
         .iter()
         .partition(|p| input.should_use_git_only(&p.name));
 
-    let is_multi_package = local_project.publishable_packages().len() > 1;
+    let is_multi_package = local_project.has_multiple_packages();
 
     // Process git_only packages (version determined from git tags).
     // Worktrees must be kept alive until we're done with the packages.
@@ -950,7 +950,6 @@ mod tests {
                     git_only: Some(true),
                     publish: false,
                     semver_check: false,
-                    tag_name_template: Some("{{ package }}-v{{ version }}".to_owned()),
                     ..Default::default()
                 })
         };

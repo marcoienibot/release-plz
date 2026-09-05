@@ -106,6 +106,11 @@ impl Project {
         &self.root
     }
 
+    /// Whether default tag names need a package prefix, before filtering to one package.
+    pub(crate) fn has_multiple_packages(&self) -> bool {
+        self.contains_multiple_pub_packages
+    }
+
     /// Packages that can be published, ordered by release order.
     pub fn publishable_packages(&self) -> Vec<&Package> {
         self.packages
