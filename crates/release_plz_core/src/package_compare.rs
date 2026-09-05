@@ -391,4 +391,26 @@ mod tests {
             vec![Utf8PathBuf::from("Cargo.toml.orig")]
         );
     }
+
+    #[test]
+    fn package_equality_ignores_extraction_markers_and_lockfile_presence() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(dir.path()).unwrap();
+        let local = root.join("local");
+        let registry = root.join("registry");
+        let manifest =
+            "[package]\nname = \"comparison-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
+        for package in [&local, &registry] {
+            fs::create_dir_all(package.join("src")).unwrap();
+            fs::write(package.join("Cargo.toml"), manifest).unwrap();
+            fs::write(package.join("src/lib.rs"), "pub fn answer() -> u8 { 42 }").unwrap();
+        }
+        fs::write(registry.join("Cargo.toml.orig"), manifest).unwrap();
+        fs::write(registry.join("Cargo.lock"), "historical lockfile").unwrap();
+        fs::write(registry.join(".cargo-ok"), "").unwrap();
+        fs::write(registry.join(".git"), "gitdir: /elsewhere").unwrap();
+        assert!(are_packages_equal(&local, &registry).unwrap());
+        fs::write(local.join("src/lib.rs"), "pub fn answer() -> u8 { 43 }").unwrap();
+        assert!(!are_packages_equal(&local, &registry).unwrap());
+    }
 }
