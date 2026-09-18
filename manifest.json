@@ -1,0 +1,36 @@
+{
+  "base": "1f8dd28cada6ed7ac6cece686af58f88c6fa0684",
+  "original": "f5ff5d14ab20c10708b8009f2f0768ef76d15320",
+  "layers": [
+    {
+      "branch": "pr-3069/01-git-history",
+      "title": "feat(git_cmd): add bounded path history walks",
+      "sha": "3821884f4fd286d866ab13ed67ac3c270f66e183"
+    },
+    {
+      "branch": "pr-3069/02-branch-walk",
+      "title": "fix(changelog): collect package history across merged branches",
+      "sha": "461a10cc8098ad78846368c318c3e2ebf291ab08"
+    },
+    {
+      "branch": "pr-3069/03-retained-changes",
+      "title": "fix(changelog): retain changes surviving equal package snapshots",
+      "sha": "2763d66bd380aa6d250b76ef7246790bb7483eff"
+    },
+    {
+      "branch": "pr-3069/04-text-conflicts",
+      "title": "fix(changelog): distinguish independent edits within conflicted lines",
+      "sha": "f090c297669c4c4e16c81135888ba637ed6663c2"
+    },
+    {
+      "branch": "pr-3069/05-file-equality",
+      "title": "fix(changelog): align retained files with package equality",
+      "sha": "d95b5cb9d482013c45daa380972a667a7a1f5ed0"
+    },
+    {
+      "branch": "pr-3069/06-remove-old-api",
+      "title": "refactor(git_cmd)!: remove checkout-per-commit history helpers",
+      "sha": "8cd0679cbe12d9b3fb29976a2c22f92cbe7a726e"
+    }
+  ]
+}
