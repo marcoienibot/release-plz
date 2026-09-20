@@ -25,6 +25,7 @@ const sidebars = {
         "usage/update",
         "usage/release-pr",
         "usage/release",
+        "usage/dist",
         "usage/init",
         "usage/set-version",
         "usage/shell-completion",

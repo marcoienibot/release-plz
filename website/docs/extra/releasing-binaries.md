@@ -1,34 +1,24 @@
 # Releasing binaries
 
-## Why release-plz doesn't release binaries
+## Using release-plz dist
 
-> Since release-plz already publishes GitHub releases, would it
-> make sense for it to build the binaries of the project and publish
-> them to the release assets? 🤔
+[`release-plz dist`](../usage/dist.md) builds binary archives, writes checksums and
+a download table, and publishes an existing draft GitHub release after all targets
+are ready. Create drafts with `release-plz release`, run `dist build --target` on
+each target's runner, then pass the CI matrix's target list to `dist publish` in
+one final job.
 
-Not really. Releasing binaries requires setting a CI job different
-from the one used to run `release-plz release` because:
+CI still owns runners, toolchain installation and artifact transfer. Release-plz
+does not generate distribution workflows. See the
+[command guide](../usage/dist.md) for configuration, cross compilation, local
+validation and retry behavior.
 
-- `release-plz release` should run once (for example on an `ubuntu` CI image);
-- building binaries requires a different CI image for each platform
-  (e.g. `ubuntu`, `macos`, `windows`).
-
-Since users have to set up an additional CI job to build binaries, using release-plz
-would not be more convenient than using a different tool.
-Plus, releasing binaries is a complex task, which is already well-handled by
-other tools in the Rust ecosystem.
-For these reasons, release-plz doesn't build and release binaries.
-
-The next section explains how to use other tools to build and release binaries after
-release-plz released the new version of your project.
-
-## Releasing binaries after release
+## Using other tools after release
 
 If you are using release-plz to release your project, you can
 run a CI job on the "tag" or "release" events to build and release the binaries.
 
-Here is an example based on release-plz's own
-[`cd.yml` workflow](https://github.com/release-plz/release-plz/blob/main/.github/workflows/cd.yml):
+Here is an example using `upload-rust-binary-action`:
 
 :::info
 To use this in your project, change:

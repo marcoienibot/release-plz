@@ -1,5 +1,6 @@
 mod changelog;
 mod completion_test;
+mod dist;
 mod git_only;
 mod helpers;
 mod release;

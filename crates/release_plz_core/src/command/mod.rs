@@ -1,3 +1,4 @@
+pub mod dist;
 mod release;
 mod release_pr;
 pub mod set_version;

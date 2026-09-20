@@ -18,3 +18,5 @@ changelog_include = ["release_plz_core"] # include commits from `release_plz_cor
 # set the path of the changelog to the root of the repository
 changelog_path = "./CHANGELOG.md"
 git_release_enable = true # create GitHub release
+git_release_draft = true # dist publish makes it public after all binaries are uploaded
+git_release_latest = false # dist publish marks stable releases latest

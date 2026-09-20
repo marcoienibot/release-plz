@@ -11,6 +11,7 @@ There are three main commands:
 
 There are also some utility commands:
 
+- [`release-plz dist`](dist.md) builds binary archives and publishes draft GitHub releases.
 - [`release-plz init`](init.md) initializes release-plz for the current GitHub repository.
 - [`release-plz set-version`](set-version.md)
   edits the version of a package in Cargo.toml and changelog.
