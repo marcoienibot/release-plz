@@ -670,6 +670,11 @@ impl Updater<'_> {
             .chain(released.and_then(|(p, _)| p.published_at_sha1()))
             .collect();
         let head = repository.current_commit_hash()?;
+        let head_package_files = released
+            .is_some()
+            .then(|| self.history_package_files(package_path, repository))
+            .transpose()?
+            .flatten();
         // Enumerate from the branch tip before checking out any historical snapshot.
         let commits = repository.commits_at_paths(
             "HEAD",
@@ -744,18 +749,19 @@ impl Updater<'_> {
                 ));
             }
         }
-        repository
-            .checkout_head()
-            .context("can't checkout head to compare dependencies")?;
         if let Some(mut changes) = retained_changes {
             // Both file lists are needed: a file added or removed since the release
             // is only listed on one side.
-            changes.add_package_files(self.history_package_files(package_path, repository)?);
+            changes.add_package_files(head_package_files);
             // A simplified walk can visit an ancestor before the equal snapshot that
             // prunes it. Make the final decision with every discovered boundary,
             // keeping only ancestors whose changes survive through another lineage.
+            // In-memory reverts use worktree attributes, so keep the walk's checkout.
             diff.commits.retain(|commit| changes.retains(&commit.id));
         }
+        repository
+            .checkout_head()
+            .context("can't checkout head to compare dependencies")?;
         // The range can be empty when only workspace Cargo.toml or Cargo.lock
         // changed. Dependency updates must not depend on visiting a package commit.
         if diff.commits.is_empty()
